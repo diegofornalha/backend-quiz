@@ -10,8 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import app_state
-from claude_rag_sdk.core.auth import verify_api_key
-from claude_rag_sdk.core.logger import get_logger
+from a2a_rag_sdk.core.auth import verify_api_key
+from a2a_rag_sdk.core.logger import get_logger
 
 router = APIRouter(prefix="/quiz", tags=["Quiz"])
 logger = get_logger("quiz")
@@ -429,8 +429,8 @@ async def generate_questions_with_rag(
     num_questions: int, difficulty_distribution: dict[str, float], focus_topics: list[str]
 ) -> dict:
     """Gera questões usando RAG + Claude."""
-    from claude_rag_sdk import ClaudeRAGOptions
-    from claude_rag_sdk.agent import AgentEngine
+    from a2a_rag_sdk import ClaudeRAGOptions
+    from a2a_rag_sdk.agent import AgentEngine
 
     try:
         # Use the global RAG instance to access ingested documents
@@ -476,7 +476,7 @@ async def generate_questions_with_rag(
 
         # Use AgentEngine to call Claude (handles authentication)
         logger.info("Gerando questões com Claude", questions=num_questions)
-        from claude_rag_sdk import AgentModel
+        from a2a_rag_sdk import AgentModel
         quiz_system_prompt = """Você é um gerador de quizzes. Responda APENAS com JSON válido.
 Não use o formato padrão de answer/citations. Gere DIRETAMENTE o JSON do quiz no formato solicitado."""
         options = ClaudeRAGOptions(id="quiz-generator", agent_model=AgentModel.OPUS, system_prompt=quiz_system_prompt)
@@ -566,9 +566,9 @@ async def generate_first_question(quiz_id: str, context: str) -> QuizQuestion:
     Returns:
         QuizQuestion gerada dinamicamente
     """
-    from claude_rag_sdk import ClaudeRAGOptions
-    from claude_rag_sdk.agent import AgentEngine
-    from claude_rag_sdk.options import AgentModel
+    from a2a_rag_sdk import ClaudeRAGOptions
+    from a2a_rag_sdk.agent import AgentEngine
+    from a2a_rag_sdk.options import AgentModel
 
     logger.info(f"[Quiz {quiz_id}] Gerando P1 dinamicamente...")
 
@@ -626,9 +626,9 @@ async def generate_remaining_questions(quiz_id: str) -> None:
     Esta função é executada via asyncio.create_task() e salva as perguntas
     no _quiz_store para serem recuperadas pelo endpoint /quiz/question.
     """
-    from claude_rag_sdk import ClaudeRAGOptions
-    from claude_rag_sdk.agent import AgentEngine
-    from claude_rag_sdk.options import AgentModel
+    from a2a_rag_sdk import ClaudeRAGOptions
+    from a2a_rag_sdk.agent import AgentEngine
+    from a2a_rag_sdk.options import AgentModel
 
     logger.info(f"[Quiz {quiz_id}] Iniciando geração em background...")
 

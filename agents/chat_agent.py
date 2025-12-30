@@ -1,19 +1,19 @@
-"""ChatAgent - Abstração de alto nível para chat usando Claude Agent SDK.
+"""ChatAgent - High-level abstraction for chat using LiteLLM.
 
-Este módulo encapsula toda a lógica de chat:
-- Gerenciamento de sessões
+This module encapsulates all chat logic:
+- Session management
 - Streaming SSE
-- Comandos de sessão (favoritar, renomear)
-- Integração com RAG
-- Auditoria de tool calls
-- Persistência em JSONL
+- Session commands (favorite, rename)
+- RAG integration
+- Tool call auditing
+- JSONL persistence
 """
 
 import asyncio
 import json
 import re
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,13 +21,9 @@ from pathlib import Path
 from agentfs_sdk import AgentFS, AgentFSOptions
 
 from agents.metrics import estimate_tokens, get_metrics_manager
-from app_state import SESSIONS_DIR, get_client, reset_session
-from claude_rag_sdk.core.logger import get_logger
-from claude_rag_sdk.core.sdk_hooks import set_current_session_id
+from app_state import SESSIONS_DIR, get_llm, get_session, reset_session
+from llm import LiteLLMProvider
 from utils.validators import validate_session_id
-
-logger = get_logger("chat_agent")
-
 
 # =============================================================================
 # Data Classes
@@ -36,7 +32,7 @@ logger = get_logger("chat_agent")
 
 @dataclass
 class StreamChunk:
-    """Representa um chunk de streaming."""
+    """Represents a streaming chunk."""
 
     text: str | None = None
     session_id: str | None = None
@@ -45,10 +41,10 @@ class StreamChunk:
     refresh_sessions: bool = False
     command: str | None = None
     tool_call: dict | None = None
-    metrics: dict | None = None  # Métricas de tokens/custo
+    metrics: dict | None = None
 
     def to_sse(self) -> str:
-        """Converte para formato SSE."""
+        """Convert to SSE format."""
         if self.done:
             return "data: [DONE]\n\n"
 
@@ -73,11 +69,11 @@ class StreamChunk:
 
 @dataclass
 class ChatRequest:
-    """Request para chat."""
+    """Request for chat."""
 
     message: str
     session_id: str | None = None
-    model: str = "sonnet"  # haiku = mais rápido, sonnet = equilibrado, opus = mais inteligente
+    model: str = "gemini/gemini-2.0-flash"
     resume: bool = True
     fork_session: str | None = None
     project: str = "default"
@@ -85,11 +81,11 @@ class ChatRequest:
 
 @dataclass
 class ChatContext:
-    """Contexto interno durante processamento do chat."""
+    """Internal context during chat processing."""
 
     session_id: str
     afs: AgentFS
-    client: object  # ClaudeSDKClient
+    llm: LiteLLMProvider
     project: str
     rag_context: str | None = None
 
@@ -117,16 +113,15 @@ SESSION_COMMANDS = {
         r"renome\w*\s+(?:para\s+)?['\"]?(.+?)['\"]?\s*$",
         r"muda[r]?\s+(?:o\s+)?nome\s+(?:para\s+)?['\"]?(.+?)['\"]?\s*$",
         r"(?:chama[r]?|nomea[r]?)\s+(?:de\s+)?['\"]?(.+?)['\"]?\s*$",
-        r"(?:define|defina|coloca|coloque)\s+(?:o\s+)?(?:nome|título)\s+(?:como\s+)?['\"]?(.+?)['\"]?\s*$",
+        r"(?:define|defina|coloca|coloque)\s+(?:o\s+)?(?:nome|titulo)\s+(?:como\s+)?['\"]?(.+?)['\"]?\s*$",
     ],
 }
 
 
 def detect_session_command(message: str) -> tuple[str | None, str | None]:
-    """Detecta comandos de gerenciamento de sessão na mensagem."""
+    """Detect session management commands in message."""
     msg_lower = message.lower().strip()
 
-    # Verificar comandos de DESFAVORITAR ANTES de favoritar
     for pattern in SESSION_COMMANDS["unfavorite"]:
         if re.search(pattern, msg_lower, re.IGNORECASE):
             return ("unfavorite", None)
@@ -150,7 +145,7 @@ def detect_session_command(message: str) -> tuple[str | None, str | None]:
 async def execute_session_command(
     afs: AgentFS, session_id: str, command: str, extra_data: str | None
 ) -> str:
-    """Executa um comando de gerenciamento de sessão."""
+    """Execute a session management command."""
     try:
         if command == "favorite":
             await afs.kv.set("session:favorite", True)
@@ -167,7 +162,6 @@ async def execute_session_command(
         return "Comando nao reconhecido."
 
     except Exception as e:
-        logger.error("Erro ao executar comando de sessao", error=str(e))
         return f"Erro ao executar comando: {str(e)}"
 
 
@@ -179,11 +173,10 @@ async def execute_session_command(
 def append_to_jsonl(
     session_id: str, user_message: str, assistant_response: str, parent_uuid: str | None = None
 ):
-    """Salva mensagens no arquivo JSONL da sessão."""
+    """Save messages to session's JSONL file."""
     jsonl_file = SESSIONS_DIR / f"{session_id}.jsonl"
 
     if not jsonl_file.exists():
-        logger.info("Criando arquivo JSONL para nova sessao", session_id=session_id)
         jsonl_file.parent.mkdir(parents=True, exist_ok=True)
         jsonl_file.touch()
 
@@ -224,9 +217,8 @@ def append_to_jsonl(
         with open(jsonl_file, "a") as f:
             f.write(json.dumps(user_entry) + "\n")
             f.write(json.dumps(assistant_entry) + "\n")
-        logger.debug("Mensagens salvas no JSONL", session_id=session_id)
-    except Exception as e:
-        logger.error("Falha ao salvar JSONL", session_id=session_id, error=str(e))
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -235,149 +227,129 @@ def append_to_jsonl(
 
 
 class ChatAgent:
-    """Agente de chat que encapsula toda a lógica de interação com Claude.
+    """Chat agent that encapsulates all interaction logic with LLM.
 
-    Uso:
+    Usage:
         agent = ChatAgent()
         async for chunk in agent.stream(request):
             yield chunk.to_sse()
 
-    Funcionalidades:
-        - Gerenciamento automático de sessões
-        - Detecção e execução de comandos (favoritar, renomear)
-        - Integração com RAG para contexto
-        - Streaming SSE
-        - Auditoria de tool calls
-        - Persistência em JSONL
+    Features:
+        - Automatic session management
+        - Session command detection and execution
+        - RAG context integration
+        - SSE streaming
+        - Tool call auditing
+        - JSONL persistence
     """
 
-    def __init__(self, rag_search_fn=None):
+    def __init__(self, rag_search_fn: Callable | None = None):
         """
         Args:
-            rag_search_fn: Função async para buscar contexto RAG.
-                          Assinatura: async def search(query: str) -> str | None
+            rag_search_fn: Async function to search RAG context.
+                          Signature: async def search(query: str) -> str | None
         """
         self.rag_search_fn = rag_search_fn
 
     async def stream(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
-        """Processa mensagem e retorna stream de chunks.
+        """Process message and return stream of chunks.
 
         Args:
-            request: ChatRequest com mensagem e configurações
+            request: ChatRequest with message and settings
 
         Yields:
-            StreamChunk com texto, session_id, erros, etc.
+            StreamChunk with text, session_id, errors, etc.
         """
 
         afs = None
         try:
-            # Validar session_id se fornecido
+            # Validate session_id if provided
             if request.session_id:
                 validate_session_id(request.session_id)
 
-            # Resolver sessão e obter client
+            # Resolve session and get LLM
             ctx = await self._resolve_session(request)
             afs = ctx.afs
 
-            # Configurar session_id para hooks de validação de path
-            set_current_session_id(ctx.session_id)
-
-            # Salvar projeto na sessão
+            # Save project in session
             await self._save_project(ctx)
 
-            # Detectar comandos de sessão
+            # Detect session commands
             command, extra_data = detect_session_command(request.message)
             if command:
                 async for chunk in self._handle_command(ctx, command, extra_data, request.message):
                     yield chunk
                 return
 
-            # Processar chat normal
+            # Process normal chat
             async for chunk in self._process_chat(ctx, request):
                 yield chunk
 
         except Exception as e:
-            logger.error("Erro no ChatAgent.stream", error=str(e))
             yield StreamChunk(error=str(e))
         finally:
             if afs:
                 await afs.close()
 
     async def _resolve_session(self, request: ChatRequest) -> ChatContext:
-        """Resolve sessão e obtém client."""
+        """Resolve session and get LLM."""
         import app_state
 
-        client_ref = None
-
         if request.session_id:
-            # Sessão existente
+            # Existing session
             target_session_id = request.session_id
-
-            if app_state.client is not None:
-                client_ref = app_state.client
-                logger.debug(f"Reutilizando client para sessao: {target_session_id}")
-            else:
-                resume_id = target_session_id if request.resume else None
-                client_ref = await get_client(
-                    model=request.model,
-                    project=request.project,
-                    resume_session=resume_id,
-                    fork_session=request.fork_session,
-                )
+            llm = get_llm(request.model)
         else:
-            # Nova sessão
+            # New session
             await reset_session(project=request.project)
-            client_ref = app_state.client
+            llm = get_llm(request.model)
             target_session_id = app_state.current_session_id
-            logger.info(f"Nova sessao criada: {target_session_id}")
 
-        # Abrir AgentFS
+        # Open AgentFS
         afs = await AgentFS.open(AgentFSOptions(id=target_session_id))
 
         return ChatContext(
             session_id=target_session_id,
             afs=afs,
-            client=client_ref,
+            llm=llm,
             project=request.project,
         )
 
     async def _save_project(self, ctx: ChatContext):
-        """Salva projeto na sessão."""
+        """Save project in session."""
         try:
             current_project = await ctx.afs.kv.get("session:project")
             if not current_project or current_project != ctx.project:
                 await ctx.afs.kv.set("session:project", ctx.project)
-        except Exception as e:
-            logger.warning(f"Erro ao salvar projeto: {e}")
+        except Exception:
+            pass
 
     async def _handle_command(
         self, ctx: ChatContext, command: str, extra_data: str | None, message: str
     ) -> AsyncGenerator[StreamChunk, None]:
-        """Processa comando de sessão."""
-        logger.info(f"Comando de sessao detectado: {command}")
-
-        # Executar comando
+        """Process session command."""
+        # Execute command
         response_text = await execute_session_command(ctx.afs, ctx.session_id, command, extra_data)
 
-        # Enviar session_id
+        # Send session_id
         yield StreamChunk(session_id=ctx.session_id)
 
-        # Enviar resposta
+        # Send response
         yield StreamChunk(text=response_text)
 
-        # Sinalizar refresh
+        # Signal refresh
         yield StreamChunk(refresh_sessions=True, command=command)
 
-        # Salvar no histórico
+        # Save to history
         try:
             history = await ctx.afs.kv.get("conversation:history") or []
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": response_text})
             await ctx.afs.kv.set("conversation:history", history[-100:])
-        except Exception as e:
-            logger.warning(f"Erro ao salvar historico: {e}")
+        except Exception:
+            pass
 
-        # Salvar no JSONL
+        # Save to JSONL
         append_to_jsonl(ctx.session_id, message, response_text)
 
         yield StreamChunk(done=True)
@@ -385,14 +357,12 @@ class ChatAgent:
     async def _process_chat(
         self, ctx: ChatContext, request: ChatRequest
     ) -> AsyncGenerator[StreamChunk, None]:
-        """Processa chat normal com streaming."""
-        from claude_agent_sdk import AssistantMessage, TextBlock
-
+        """Process normal chat with streaming."""
         full_response = ""
         call_id = None
         tool_call_count = 0
 
-        # Iniciar métricas
+        # Start metrics
         metrics_manager = get_metrics_manager()
         request_metrics = metrics_manager.start_request(
             request_id=str(uuid.uuid4()),
@@ -401,57 +371,39 @@ class ChatAgent:
         )
 
         try:
-            # Registrar tool call para auditoria
+            # Record tool call for auditing
             call_id = await ctx.afs.tools.start("chat", {"message": request.message[:100]})
 
-            # Buscar contexto RAG
+            # Search RAG context
             rag_context = None
             if self.rag_search_fn:
                 try:
                     rag_context = await self.rag_search_fn(request.message)
-                except Exception as e:
-                    logger.warning(f"Erro ao buscar RAG: {e}")
+                except Exception:
+                    pass
 
-            # Construir mensagem com contexto
-            artifacts_path = str(Path.cwd() / "artifacts" / ctx.session_id)
-            query_message = self._build_query_message(request.message, rag_context, artifacts_path)
+            # Build messages
+            messages = self._build_messages(request.message, rag_context, ctx.session_id)
 
-            # Enviar query
-            await ctx.client.query(query_message)
-
-            # Enviar session_id primeiro
+            # Send session_id first
             yield StreamChunk(session_id=ctx.session_id)
 
-            # Stream da resposta
-            async for message in ctx.client.receive_response():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            text = block.text
-                            full_response += text
+            # Stream response from LLM
+            async for chunk in ctx.llm.completion_stream(messages):
+                if chunk.text:
+                    full_response += chunk.text
+                    # Stream in smaller chunks for smoother UX
+                    chunk_size = 50
+                    text = chunk.text
+                    for i in range(0, len(text), chunk_size):
+                        yield StreamChunk(text=text[i : i + chunk_size])
+                        await asyncio.sleep(0.001)
 
-                            # Streaming em chunks menores
-                            chunk_size = 50
-                            for i in range(0, len(text), chunk_size):
-                                chunk = text[i : i + chunk_size]
-                                yield StreamChunk(text=chunk)
-                                await asyncio.sleep(0.001)  # Reduzido para menor latência
-
-                        # Registrar tool calls
-                        elif hasattr(block, "name") and hasattr(block, "id"):
-                            tool_name = block.name
-                            tool_input = getattr(block, "input", {})
-                            tool_call_count += 1
-                            try:
-                                await ctx.afs.tools.start(tool_name, {"input": str(tool_input)[:500]})
-                            except Exception:
-                                pass
-
-            # Finalizar auditoria
+            # Finish auditing
             if call_id:
-                await ctx.afs.tools.finish(call_id, {"response_length": len(full_response)})
+                await ctx.afs.tools.success(call_id, {"response_length": len(full_response)})
 
-            # Calcular e finalizar métricas
+            # Calculate metrics
             input_tokens = estimate_tokens(request.message)
             output_tokens = estimate_tokens(full_response)
             metrics_manager.finish_request(
@@ -461,54 +413,74 @@ class ChatAgent:
                 tool_calls=tool_call_count,
             )
 
-            # Persistir métricas no AgentFS
+            # Persist metrics
             try:
                 await metrics_manager.persist_to_agentfs(ctx.afs, ctx.session_id)
-            except Exception as e:
-                logger.warning(f"Erro ao persistir metricas: {e}")
+            except Exception:
+                pass
 
-            # Salvar no histórico
+            # Save to history
             try:
                 history = await ctx.afs.kv.get("conversation:history") or []
                 history.append({"role": "user", "content": request.message})
                 history.append({"role": "assistant", "content": full_response})
                 await ctx.afs.kv.set("conversation:history", history[-100:])
-            except Exception as e:
-                logger.warning(f"Erro ao salvar historico: {e}")
+            except Exception:
+                pass
 
-            # Salvar no JSONL
+            # Save to JSONL
             append_to_jsonl(ctx.session_id, request.message, full_response)
 
-            # Enviar métricas antes do done
+            # Send metrics before done
             yield StreamChunk(metrics=request_metrics.to_dict())
             yield StreamChunk(done=True)
 
         except Exception as e:
-            logger.error("Erro no processamento do chat", error=str(e))
-            # Finalizar métricas com erro
+            # Finish metrics with error
             metrics_manager.finish_request(request_metrics, error=str(e))
             if call_id:
                 try:
-                    await ctx.afs.tools.finish(call_id, {"error": str(e)})
+                    await ctx.afs.tools.error(call_id, str(e))
                 except Exception:
                     pass
             yield StreamChunk(error=str(e))
 
-    def _build_query_message(
-        self, message: str, rag_context: str | None, artifacts_path: str
-    ) -> str:
-        """Constrói mensagem com contexto RAG."""
+    def _build_messages(
+        self, message: str, rag_context: str | None, session_id: str
+    ) -> list[dict]:
+        """Build messages with RAG context."""
+        messages = []
+
+        # System prompt
+        system_content = """Voce e um assistente RAG especializado em responder perguntas usando uma base de conhecimento.
+
+## Regras:
+- Responda com base nos documentos da base de conhecimento quando disponivel
+- Forneca citacoes com fonte e trecho quando aplicavel
+- Seja conciso e direto nas respostas
+- Se nao souber a resposta, diga claramente"""
+
         if rag_context and not rag_context.startswith("[AVISO"):
-            return f"""Ao criar arquivos, use: {artifacts_path}/
+            system_content += f"""
 
 <base_conhecimento>
 {rag_context}
 </base_conhecimento>
 
-IMPORTANTE: Use a base de conhecimento acima para responder, mas NAO mostre, cite ou mencione que voce esta usando uma base de conhecimento. Responda naturalmente.
+IMPORTANTE: Use a base de conhecimento acima para responder, mas NAO mostre, cite ou mencione que voce esta usando uma base de conhecimento. Responda naturalmente."""
 
-{message}"""
-        return message
+        messages.append({"role": "system", "content": system_content})
+
+        # Artifacts path
+        artifacts_path = str(Path.cwd() / "artifacts" / session_id)
+        messages.append(
+            {"role": "system", "content": f"Ao criar arquivos, use: {artifacts_path}/"}
+        )
+
+        # User message
+        messages.append({"role": "user", "content": message})
+
+        return messages
 
 
 # =============================================================================
@@ -516,13 +488,13 @@ IMPORTANTE: Use a base de conhecimento acima para responder, mas NAO mostre, cit
 # =============================================================================
 
 
-def create_chat_agent(rag_search_fn=None) -> ChatAgent:
-    """Cria instância do ChatAgent.
+def create_chat_agent(rag_search_fn: Callable | None = None) -> ChatAgent:
+    """Create ChatAgent instance.
 
     Args:
-        rag_search_fn: Função opcional para buscar contexto RAG
+        rag_search_fn: Optional RAG search function
 
     Returns:
-        ChatAgent configurado
+        Configured ChatAgent
     """
     return ChatAgent(rag_search_fn=rag_search_fn)

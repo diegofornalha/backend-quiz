@@ -1,0 +1,11 @@
+[submodule "agentfs"]
+	path = agentfs
+	url = https://github.com/tursodatabase/agentfs.git
+
+[submodule "a2a-python"]
+	path = a2a-python
+	url = https://github.com/a2aproject/a2a-python.git
+
+[submodule "litellm"]
+	path = litellm
+	url = https://github.com/BerriAI/litellm.git

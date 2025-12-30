@@ -1,12 +1,14 @@
-"""Title Generator - Geração inteligente de títulos usando Claude Agent SDK.
+"""Title Generator - Geração inteligente de títulos usando LiteLLM.
 
-Usa a função `query` do Claude Agent SDK para gerar títulos curtos e
-descritivos para conversas, baseado no contexto das mensagens.
+Usa LiteLLM com Gemini para gerar títulos curtos e descritivos para
+conversas, baseado no contexto das mensagens.
 """
 
-from claude_rag_sdk.core.logger import get_logger
+import logging
 
-logger = get_logger("title_generator")
+from llm import LiteLLMProvider
+
+logger = logging.getLogger("title_generator")
 
 
 async def generate_conversation_title(
@@ -14,7 +16,7 @@ async def generate_conversation_title(
     max_messages: int = 5,
     max_words: int = 5,
 ) -> str:
-    """Gera um título curto para uma conversa usando Claude.
+    """Gera um título curto para uma conversa usando LLM.
 
     Args:
         messages: Lista de mensagens da conversa [{"role": "user/assistant", "content": "..."}]
@@ -32,17 +34,6 @@ async def generate_conversation_title(
         >>> titulo = await generate_conversation_title(messages)
         >>> print(titulo)  # "Funcionamento do React Hooks"
     """
-    try:
-        from claude_agent_sdk import ClaudeAgentOptions
-        from claude_agent_sdk import query as sdk_query
-    except ImportError as e:
-        logger.warning(f"Claude Agent SDK não disponível: {e}")
-        # Fallback para as 3 primeiras palavras
-        if messages:
-            words = messages[0].get("content", "").split()[:3]
-            return " ".join(words)
-        return "Nova conversa"
-
     # Limitar mensagens para não sobrecarregar
     limited_messages = messages[:max_messages]
 
@@ -64,20 +55,16 @@ Título:"""
     titulo = ""
 
     try:
-        options = ClaudeAgentOptions(
-            model="claude-sonnet-4-20250514",  # Modelo rápido e barato
-            system_prompt=system_prompt,
-        )
+        # Usar LiteLLM com Gemini Flash para velocidade
+        llm = LiteLLMProvider(model="gemini/gemini-2.0-flash")
 
-        async for message in sdk_query(prompt=prompt, options=options):
-            # Extrai o texto da resposta
-            if hasattr(message, "content"):
-                for block in message.content:
-                    if hasattr(block, "text"):
-                        titulo += block.text
+        llm_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
 
-        # Limpar título
-        titulo = titulo.strip()
+        response = await llm.completion(llm_messages)
+        titulo = response.content.strip()
 
         # Remover aspas se houver
         titulo = titulo.strip('"\'')
@@ -95,7 +82,7 @@ Título:"""
         return titulo
 
     except Exception as e:
-        logger.warning(f"Erro ao gerar título com Claude: {e}")
+        logger.warning(f"Erro ao gerar título com LLM: {e}")
         # Fallback para as 3 primeiras palavras
         if messages:
             words = messages[0].get("content", "").split()[:3]

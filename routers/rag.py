@@ -6,9 +6,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 import app_state
-from claude_rag_sdk.core.auth import verify_api_key
-from claude_rag_sdk.core.config import get_config, reload_config
-from claude_rag_sdk.core.rate_limiter import RATE_LIMITS, limiter
+from a2a_rag_sdk.core.auth import verify_api_key
+from a2a_rag_sdk.core.config import get_config, reload_config
+from a2a_rag_sdk.core.rate_limiter import RATE_LIMITS, limiter
 from utils.file_watcher import get_watcher
 
 router = APIRouter(prefix="/rag", tags=["RAG"])
@@ -39,7 +39,7 @@ async def rag_search(
     request: Request, query: str, top_k: int = 5, api_key: str = Depends(verify_api_key)
 ):
     """Search documents using RAG."""
-    from claude_rag_sdk import ClaudeRAG, ClaudeRAGOptions
+    from a2a_rag_sdk import ClaudeRAG, ClaudeRAGOptions
 
     temp_rag = None
     try:
@@ -75,7 +75,7 @@ async def search_test(request: Request, query: str, top_k: int = 5):
 
     engine = None
     try:
-        from claude_rag_sdk.search import SearchEngine
+        from a2a_rag_sdk.search import SearchEngine
 
         engine = SearchEngine(
             db_path=str(rag_db_path),
@@ -113,7 +113,7 @@ async def rag_ingest(
     request: Request, content: str, source: str, api_key: str = Depends(verify_api_key)
 ):
     """Add document to RAG."""
-    from claude_rag_sdk import ClaudeRAG, ClaudeRAGOptions
+    from a2a_rag_sdk import ClaudeRAG, ClaudeRAGOptions
 
     temp_rag = None
     try:
@@ -132,7 +132,7 @@ async def rag_ingest(
 @limiter.limit(RATE_LIMITS.get("default", "60/minute"))
 async def rag_stats(request: Request):
     """Get RAG statistics."""
-    from claude_rag_sdk import ClaudeRAG, ClaudeRAGOptions
+    from a2a_rag_sdk import ClaudeRAG, ClaudeRAGOptions
 
     temp_rag = None
     try:
@@ -353,7 +353,7 @@ async def rag_config(request: Request):
     if db_exists and db_size > 0:
         engine = None
         try:
-            from claude_rag_sdk.ingest import IngestEngine
+            from a2a_rag_sdk.ingest import IngestEngine
 
             engine = IngestEngine(
                 db_path=str(rag_db_path),
@@ -403,7 +403,7 @@ async def reload_rag_config(api_key: str = Depends(verify_api_key)):
 @router.get("/embedding-models")
 async def list_embedding_models():
     """Lista todos os modelos de embedding disponíveis."""
-    from claude_rag_sdk.core.config import EmbeddingModel
+    from a2a_rag_sdk.core.config import EmbeddingModel
 
     models = []
     for model in EmbeddingModel:
@@ -440,7 +440,7 @@ async def change_embedding_model(
 
     from dotenv import set_key
 
-    from claude_rag_sdk.core.config import EmbeddingModel, reload_config
+    from a2a_rag_sdk.core.config import EmbeddingModel, reload_config
 
     # Validar modelo
     valid_models = {m.short_name: m for m in EmbeddingModel}
@@ -727,7 +727,7 @@ async def _rag_ask_internal(
     """
     import time
 
-    from claude_rag_sdk.core.config import get_config
+    from a2a_rag_sdk.core.config import get_config
 
     config = get_config()
     start_time = time.time()
@@ -735,7 +735,7 @@ async def _rag_ask_internal(
     # 1. Buscar documentos relevantes
     search_results = []
     try:
-        from claude_rag_sdk.search import SearchEngine
+        from a2a_rag_sdk.search import SearchEngine
 
         engine = SearchEngine(
             db_path=str(config.rag_db_path),
@@ -768,34 +768,31 @@ async def _rag_ask_internal(
 
     context = "\n\n---\n\n".join(context_parts)
 
-    # 3. Chamar Claude para gerar resposta
+    # 3. Chamar LLM para gerar resposta
     try:
-        from claude_agent_sdk import ClaudeAgentOptions
-        from claude_agent_sdk import query as sdk_query
+        from llm import LiteLLMProvider
 
-        system_prompt = f"""Você é um assistente que responde perguntas baseado EXCLUSIVAMENTE nos documentos fornecidos.
+        system_prompt = f"""Voce e um assistente que responde perguntas baseado EXCLUSIVAMENTE nos documentos fornecidos.
 
-REGRAS OBRIGATÓRIAS:
-1. Responda APENAS com informações dos documentos fornecidos
-2. SEMPRE inclua citações no formato: [Fonte: nome_do_documento]
-3. Se não houver evidência suficiente, diga: "Não encontrei essa informação nos documentos fornecidos"
+REGRAS OBRIGATORIAS:
+1. Responda APENAS com informacoes dos documentos fornecidos
+2. SEMPRE inclua citacoes no formato: [Fonte: nome_do_documento]
+3. Se nao houver evidencia suficiente, diga: "Nao encontrei essa informacao nos documentos fornecidos"
 4. Seja preciso e cite trechos relevantes
 5. User role: {user_role}
 
 CONTEXTO DOS DOCUMENTOS:
 {context}"""
 
-        options = ClaudeAgentOptions(
-            model="claude-sonnet-4-20250514",
-            system_prompt=system_prompt,
-        )
+        llm = LiteLLMProvider(model="gemini/gemini-2.0-flash")
 
-        answer = ""
-        async for message in sdk_query(prompt=question, options=options):
-            if hasattr(message, "content"):
-                for block in message.content:
-                    if hasattr(block, "text"):
-                        answer += block.text
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ]
+
+        response = await llm.completion(messages)
+        answer = response.content
 
         # 4. Extrair citações da resposta
         citations = _extract_citations(answer, search_results)

@@ -21,8 +21,8 @@ from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from claude_rag_sdk.core.auth import verify_api_key
-from claude_rag_sdk.core.config import get_config
+from a2a_rag_sdk.core.auth import verify_api_key
+from a2a_rag_sdk.core.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +77,8 @@ def _get_registry():
     """Obtém o registry MCP de forma lazy."""
     try:
         # Garante que adapters foram registrados
-        from claude_rag_sdk import mcp_adapters  # noqa: F401
-        from claude_rag_sdk.mcp_client import get_mcp_registry
+        from a2a_rag_sdk import mcp_adapters  # noqa: F401
+        from a2a_rag_sdk.mcp_client import get_mcp_registry
 
         return get_mcp_registry()
     except ImportError as e:
@@ -89,7 +89,7 @@ def _get_registry():
 def _get_config():
     """Obtém configuração MCP."""
     try:
-        from claude_rag_sdk.mcp_client import get_mcp_config
+        from a2a_rag_sdk.mcp_client import get_mcp_config
 
         return get_mcp_config()
     except ImportError:
@@ -98,7 +98,7 @@ def _get_config():
 
 async def _get_rag_engine():
     """Obtém engine de ingestão do RAG."""
-    from claude_rag_sdk.ingest import IngestEngine
+    from a2a_rag_sdk.ingest import IngestEngine
 
     config = get_config()
     return IngestEngine(
@@ -335,7 +335,7 @@ async def _run_ingest_task(
     documents_ingested = 0
 
     try:
-        from claude_rag_sdk.mcp_client import get_adapter
+        from a2a_rag_sdk.mcp_client import get_adapter
 
         # Obtém adapter (conecta se necessário)
         adapter = await get_adapter(adapter_name)

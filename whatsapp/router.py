@@ -119,6 +119,47 @@ async def evolution_webhook(
 
         # Extrair dados do remetente
         remote_jid = key.get("remoteJid", "")
+
+        # === REDIRECIONAR MENSAGENS DE GRUPO ===
+        if remote_jid.endswith("@g.us"):
+            # É mensagem de grupo - verificar whitelist primeiro
+            from whatsapp.group_router import process_group_message, get_group_manager, get_evolution_client as get_group_evolution
+
+            group_id = remote_jid
+            group_manager = get_group_manager()
+
+            # Ignorar silenciosamente grupos não autorizados
+            if not group_manager.is_group_allowed(group_id):
+                logger.debug(f"Grupo não autorizado (ignorando): {group_id}")
+                return {"status": "ignored", "reason": "group not whitelisted"}
+
+            participant = key.get("participant", "")
+            user_id = participant.replace("@s.whatsapp.net", "") if participant else ""
+            user_name = data.get("pushName", "Participante")
+
+            # Extrair texto
+            message_type = message_data.get("messageType")
+            text = ""
+            if message_type == "conversation":
+                text = message_data.get("conversation", "")
+            elif message_type == "extendedTextMessage":
+                text = message_data.get("extendedTextMessage", {}).get("text", "")
+
+            if text:
+                group_evolution = get_group_evolution()
+                background_tasks.add_task(
+                    process_group_message,
+                    group_id=group_id,
+                    user_id=user_id,
+                    user_name=user_name,
+                    text=text.strip(),
+                    group_manager=group_manager,
+                    evolution=group_evolution,
+                )
+                return {"status": "ok", "message": "redirected to group processor"}
+            return {"status": "ignored", "reason": "group message without text"}
+        # === FIM REDIRECIONAMENTO ===
+
         user_number = remote_jid.replace("@s.whatsapp.net", "")
 
         # Extrair texto da mensagem

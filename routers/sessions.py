@@ -15,10 +15,10 @@ from app_state import (
     get_current_session_id,
     reset_session,
 )
-from claude_rag_sdk.core.auth import verify_api_key
-from claude_rag_sdk.core.guest_limits import get_guest_limit_manager
-from claude_rag_sdk.core.logger import get_logger
-from claude_rag_sdk.core.rate_limiter import get_limiter
+from a2a_rag_sdk.core.auth import verify_api_key
+from a2a_rag_sdk.core.guest_limits import get_guest_limit_manager
+from a2a_rag_sdk.core.logger import get_logger
+from a2a_rag_sdk.core.rate_limiter import get_limiter
 from utils.validators import validate_session_id
 
 router = APIRouter(tags=["Sessions"])

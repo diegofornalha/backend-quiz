@@ -1,8 +1,8 @@
 """
-Chat Simples Server - Powered by Claude RAG SDK
+Chat Simples Server - Powered by A2A RAG SDK + LiteLLM
 
 Production-ready FastAPI server with:
-- Claude RAG SDK integration
+- A2A RAG SDK integration
 - Session management via AgentFS
 - Rate limiting, CORS, authentication
 - Prompt injection protection
@@ -13,15 +13,19 @@ Production-ready FastAPI server with:
 import os
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import app_state
-from claude_rag_sdk.core.auth import is_auth_enabled
-from claude_rag_sdk.core.exceptions import RAGException
-from claude_rag_sdk.core.logger import get_logger
-from claude_rag_sdk.core.rate_limiter import SLOWAPI_AVAILABLE
+from a2a_rag_sdk.core.auth import is_auth_enabled
+from a2a_rag_sdk.core.exceptions import RAGException
+from a2a_rag_sdk.core.logger import get_logger
+from a2a_rag_sdk.core.rate_limiter import SLOWAPI_AVAILABLE
 
 logger = get_logger("server")
 from routers import (
@@ -38,6 +42,7 @@ from routers import (
 )
 from routers.v1 import v1_router
 from whatsapp import router as whatsapp_router
+from whatsapp.group_router import router as whatsapp_group_router
 
 # from routers.neo4j_mcp import router as neo4j_mcp_router  # Bridge desnecessário - SDK funciona agora!
 
@@ -64,7 +69,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Claude RAG SDK API",
+    title="A2A RAG SDK API",
     description="""
 ## Chat Simples - Backend API
 
@@ -108,7 +113,7 @@ data: [DONE]
         {"name": "Health", "description": "Endpoints de status e health check"},
     ],
     contact={
-        "name": "Claude RAG SDK",
+        "name": "A2A RAG SDK",
         "url": "https://github.com/your-org/claude-rag-sdk",
     },
     license_info={
@@ -187,7 +192,7 @@ if SLOWAPI_AVAILABLE:
     from slowapi import _rate_limit_exceeded_handler
     from slowapi.errors import RateLimitExceeded
 
-    from claude_rag_sdk.core.rate_limiter import get_limiter
+    from a2a_rag_sdk.core.rate_limiter import get_limiter
 
     app.state.limiter = get_limiter()
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -209,7 +214,8 @@ app.include_router(artifacts_router)
 app.include_router(audit_router)
 app.include_router(fs_router)
 app.include_router(evaluate_router)
-app.include_router(whatsapp_router)  # WhatsApp quiz integration
+app.include_router(whatsapp_router)  # WhatsApp quiz integration (individual)
+app.include_router(whatsapp_group_router)  # WhatsApp quiz integration (group mode)
 # app.include_router(neo4j_mcp_router)  # Não necessário - SDK funciona!
 
 # MCP router é opcional - só inclui se disponível
@@ -233,13 +239,13 @@ async def root():
         "status": "ok",
         "session_active": app_state.client is not None,
         "session_id": app_state.current_session_id,
-        "message": "Chat Simples v3 - Claude RAG SDK",
+        "message": "Chat Simples v3 - A2A RAG SDK",
         "auth_enabled": is_auth_enabled(),
     }
 
     # Em desenvolvimento, expor dev key para facilitar testes
     if env == "development" and is_auth_enabled():
-        from claude_rag_sdk.core.auth import VALID_API_KEYS
+        from a2a_rag_sdk.core.auth import VALID_API_KEYS
 
         if VALID_API_KEYS:
             response["dev_key"] = list(VALID_API_KEYS)[0]

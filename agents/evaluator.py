@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from claude_rag_sdk.core.logger import get_logger
+from a2a_rag_sdk.core.logger import get_logger
 
 logger = get_logger("evaluator")
 
@@ -305,7 +305,7 @@ class RAGEvaluator:
     def _load_api_key_from_env(self) -> str | None:
         """Carrega API key do .env."""
         env_paths = [
-            Path(__file__).parent.parent / "claude_rag_sdk" / ".env",
+            Path(__file__).parent.parent / "a2a_rag_sdk" / ".env",
             Path(__file__).parent.parent / ".env",
             Path.cwd() / ".env",
         ]

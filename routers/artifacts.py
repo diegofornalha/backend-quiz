@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 import app_state
 from app_state import get_agentfs
-from claude_rag_sdk.core.rate_limiter import RATE_LIMITS, limiter
+from a2a_rag_sdk.core.rate_limiter import RATE_LIMITS, limiter
 from utils.validators import validate_directory_path, validate_filename, validate_session_id
 
 router = APIRouter(prefix="/artifacts", tags=["Artifacts"])

@@ -14,7 +14,7 @@ from typing import Any
 
 from agentfs_sdk import AgentFS, AgentFSOptions
 
-from claude_rag_sdk.core.logger import get_logger
+from a2a_rag_sdk.core.logger import get_logger
 
 logger = get_logger("session_cache")
 

@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from claude_rag_sdk.core.logger import get_logger
+from a2a_rag_sdk.core.logger import get_logger
 
 logger = get_logger("metrics")
 

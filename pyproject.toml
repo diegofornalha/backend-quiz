@@ -28,11 +28,11 @@ classifiers = [
 
 dependencies = [
     # AgentFS - base para filesystem, KV store e tool tracking
-    "agentfs-sdk>=0.4.0",
+    "agentfs-sdk>=0.4.0rc2",
     "pyturso>=0.4.0",
 
-    # Claude Agent SDK - para queries com reasoning
-    "claude-agent-sdk",
+    # LiteLLM - Provider agnóstico para LLMs (Gemini, Claude, etc)
+    "litellm>=1.40.0",
 
     # MCP Server
     "fastmcp>=0.1.0",
@@ -78,7 +78,7 @@ Repository = "https://github.com/anthropics/claude-rag-sdk"
 Issues = "https://github.com/anthropics/claude-rag-sdk/issues"
 
 [tool.setuptools.packages.find]
-include = ["claude_rag_sdk*"]
+include = ["a2a_rag_sdk*"]
 
 [tool.ruff]
 line-length = 100
@@ -106,17 +106,17 @@ ignore = [
 # Imports condicionais são intencionais
 "server.py" = ["E402", "S104"]
 "routers/chat.py" = ["E402", "S108", "S110"]
-"claude_rag_sdk/core/rate_limiter.py" = ["E402"]
+"a2a_rag_sdk/core/rate_limiter.py" = ["E402"]
 # Circuit breaker usa random para jitter - não é criptográfico
-"claude_rag_sdk/core/circuit_breaker.py" = ["S311"]
+"a2a_rag_sdk/core/circuit_breaker.py" = ["S311"]
 # SDK hooks pode usar /tmp para artifacts
-"claude_rag_sdk/core/sdk_hooks.py" = ["S108"]
+"a2a_rag_sdk/core/sdk_hooks.py" = ["S108"]
 # MCP client usa subprocess de forma segura
-"claude_rag_sdk/mcp/client.py" = ["S603", "S110"]
+"a2a_rag_sdk/mcp/client.py" = ["S603", "S110"]
 # Hybrid search constrói SQL de forma segura (valores escapados)
-"claude_rag_sdk/core/hybrid_search.py" = ["S608"]
+"a2a_rag_sdk/core/hybrid_search.py" = ["S608"]
 # Database pool - ignorar falhas de conexão/cleanup é intencional
-"claude_rag_sdk/core/database.py" = ["S110"]
+"a2a_rag_sdk/core/database.py" = ["S110"]
 # Routers - leitura de valores opcionais, cleanup graceful
 "routers/sessions.py" = ["S110"]
 "routers/audit.py" = ["S110"]
@@ -153,5 +153,6 @@ module = [
     "pyturso.*",
     "slowapi.*",
     "sentence_transformers.*",
+    "litellm.*",
 ]
 ignore_missing_imports = true

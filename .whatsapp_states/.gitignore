@@ -1,0 +1,5 @@
+# Ignorar todos os estados de usuários (arquivos JSON)
+*.json
+
+# Manter o diretório no git
+!.gitignore

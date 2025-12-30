@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from claude_rag_sdk.core.auth import verify_api_key
+from a2a_rag_sdk.core.auth import verify_api_key
 
 router = APIRouter(prefix="/evaluate", tags=["Evaluation"])
 

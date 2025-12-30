@@ -457,7 +457,7 @@ async def main():
     parser.add_argument(
         "--csv",
         type=Path,
-        default=Path(__file__).parent.parent / "claude_rag_sdk" / "ingest" / "Prova_Atlantyx_IA_Senior_10_Perguntas a serem respondidas pela IA com base nos documentos.csv",
+        default=Path(__file__).parent.parent / "a2a_rag_sdk" / "ingest" / "Prova_Atlantyx_IA_Senior_10_Perguntas a serem respondidas pela IA com base nos documentos.csv",
         help="Caminho do CSV com perguntas",
     )
     parser.add_argument(

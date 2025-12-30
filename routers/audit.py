@@ -5,8 +5,8 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 
 from app_state import AGENTFS_DIR, get_current_session_id
-from claude_rag_sdk.core.rate_limiter import RATE_LIMITS, limiter
-from claude_rag_sdk.core.sdk_hooks import AuditEventType, get_audit_database, get_hooks_manager
+from a2a_rag_sdk.core.rate_limiter import RATE_LIMITS, limiter
+from a2a_rag_sdk.core.sdk_hooks import AuditEventType, get_audit_database, get_hooks_manager
 from utils.debug_parser import parse_debug_file
 
 router = APIRouter(prefix="/audit", tags=["Audit"])

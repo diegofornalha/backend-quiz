@@ -31,8 +31,8 @@ from pathlib import Path
 # Adicionar o diretorio pai ao path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from claude_rag_sdk.ingest import IngestEngine
-from claude_rag_sdk.options import ChunkingStrategy
+from a2a_rag_sdk.ingest import IngestEngine
+from a2a_rag_sdk.options import ChunkingStrategy
 
 # Configuracoes padrao
 DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "rag_knowledge.db"
