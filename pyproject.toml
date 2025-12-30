@@ -1,0 +1,157 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-rag-sdk"
+version = "0.1.0"
+description = "RAG SDK for Claude with AgentFS integration - Semantic search, hybrid search, and AI-powered Q&A"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["ai", "rag", "claude", "anthropic", "agentfs", "semantic-search", "embeddings", "llm"]
+authors = [
+    {name = "Claude Partner"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+dependencies = [
+    # AgentFS - base para filesystem, KV store e tool tracking
+    "agentfs-sdk>=0.4.0",
+    "pyturso>=0.4.0",
+
+    # Claude Agent SDK - para queries com reasoning
+    "claude-agent-sdk",
+
+    # MCP Server
+    "fastmcp>=0.1.0",
+
+    # Embeddings
+    "fastembed>=0.3.0",
+
+    # Vector Database
+    "apsw>=3.45.0",
+    "sqlite-vec>=0.1.0",
+
+    # Utilities
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+
+    # Server (rate limiting)
+    "slowapi>=0.1.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.12.0",
+    "pytest-timeout>=2.2.0",
+    "httpx>=0.25.0",
+    "ruff>=0.4.0",
+    "pip-audit>=2.6.0",
+    "mypy>=1.8.0",
+]
+reranking = [
+    "sentence-transformers>=2.2.0",
+]
+all = [
+    "claude-rag-sdk[dev,reranking]",
+]
+
+[project.urls]
+Homepage = "https://github.com/anthropics/claude-rag-sdk"
+Documentation = "https://github.com/anthropics/claude-rag-sdk#readme"
+Repository = "https://github.com/anthropics/claude-rag-sdk"
+Issues = "https://github.com/anthropics/claude-rag-sdk/issues"
+
+[tool.setuptools.packages.find]
+include = ["claude_rag_sdk*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "S", "B", "C4", "UP"]
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "S101",   # Assert used (ok in tests)
+    "S104",   # Possible binding to all interfaces
+    "S105",   # Hardcoded password (false positives)
+    "S106",   # Hardcoded password (false positives)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106"]
+# Scripts de desenvolvimento - subprocess, hash e segurança são aceitáveis
+"scripts/**/*.py" = ["S603", "S607", "S110", "S324"]
+# AgentFS SDK é submódulo - ignorar todos os avisos de segurança
+"agentfs/**/*.py" = ["S101", "S603", "S607", "S608", "S110", "UP035"]
+# Utils de desenvolvimento
+"utils/file_watcher.py" = ["S603", "S607"]
+"utils/mcp_neo4j_bridge.py" = ["S107"]
+# Imports condicionais são intencionais
+"server.py" = ["E402", "S104"]
+"routers/chat.py" = ["E402", "S108", "S110"]
+"claude_rag_sdk/core/rate_limiter.py" = ["E402"]
+# Circuit breaker usa random para jitter - não é criptográfico
+"claude_rag_sdk/core/circuit_breaker.py" = ["S311"]
+# SDK hooks pode usar /tmp para artifacts
+"claude_rag_sdk/core/sdk_hooks.py" = ["S108"]
+# MCP client usa subprocess de forma segura
+"claude_rag_sdk/mcp/client.py" = ["S603", "S110"]
+# Hybrid search constrói SQL de forma segura (valores escapados)
+"claude_rag_sdk/core/hybrid_search.py" = ["S608"]
+# Database pool - ignorar falhas de conexão/cleanup é intencional
+"claude_rag_sdk/core/database.py" = ["S110"]
+# Routers - leitura de valores opcionais, cleanup graceful
+"routers/sessions.py" = ["S110"]
+"routers/audit.py" = ["S110"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = false  # Progressivo: ativar depois
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+show_error_codes = true
+show_column_numbers = true
+
+# Ignorar bibliotecas sem stubs
+[[tool.mypy.overrides]]
+module = [
+    "agentfs_sdk.*",
+    "fastembed.*",
+    "sqlite_vec.*",
+    "apsw.*",
+    "anthropic.*",
+    "fastmcp.*",
+    "pyturso.*",
+    "slowapi.*",
+    "sentence_transformers.*",
+]
+ignore_missing_imports = true
