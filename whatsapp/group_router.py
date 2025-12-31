@@ -637,6 +637,15 @@ async def handle_hint_request(
     1. Gera dica não repetitiva baseada no RAG
     2. Após a dica, relembra as opções de resposta
     """
+    # Validar que há um quiz ativo
+    if not session.quiz_id:
+        await evolution.send_text(
+            group_id,
+            "⚠️ *Nenhum quiz ativo para dar dica.*\n\n"
+            "Digite *INICIAR* para começar um novo quiz!"
+        )
+        return
+
     try:
         # Simular digitação enquanto busca (sem mensagem de "buscando...")
         await evolution.send_typing(group_id, duration=3000)
@@ -760,6 +769,11 @@ async def handle_group_answer(
     4. Mostra posição no ranking (se houver mais de 1 participante)
     5. Avança turno e envia próxima pergunta
     """
+    # Validar que há um quiz ativo
+    if not session.quiz_id:
+        logger.warning(f"[handle_group_answer] quiz_id é None para grupo {group_id}")
+        return
+
     try:
         # === SISTEMA DE TURNOS ===
         # Se não for a vez do usuário, informar de quem é a vez
@@ -1042,6 +1056,16 @@ async def send_next_group_question(
     evolution: EvolutionAPIClient,
 ):
     """Envia próxima pergunta para o grupo."""
+    # Validar que há um quiz ativo
+    if not session.quiz_id:
+        logger.warning(f"[send_next_group_question] quiz_id é None para grupo {group_id}")
+        await evolution.send_text(
+            group_id,
+            "⚠️ *Nenhum quiz ativo.*\n\n"
+            "Digite *INICIAR* para começar um novo quiz!"
+        )
+        return
+
     try:
         # Mostrar resultado da pergunta anterior
         agentfs = await app_state.get_quiz_agentfs()

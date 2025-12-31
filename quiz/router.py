@@ -125,7 +125,7 @@ async def start_quiz(
 
     return StartQuizResponse(
         quiz_id=quiz_id,
-        total_questions=10,
+        total_questions=engine.TOTAL_QUESTIONS,
         first_question=first_question,
     )
 
@@ -147,8 +147,11 @@ async def get_question(
         quiz_id: ID do quiz retornado por /start
         index: Número da pergunta (1-10)
     """
-    if index < 1 or index > 10:
-        raise HTTPException(status_code=400, detail="Index deve ser entre 1 e 10")
+    if index < 1 or index > engine.TOTAL_QUESTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Index deve ser entre 1 e {engine.TOTAL_QUESTIONS}"
+        )
 
     # Buscar pergunta com timeout
     question = await engine.get_question(quiz_id, index, timeout=30.0)
@@ -286,24 +289,24 @@ async def calculate_results(
     if not status.get("complete"):
         raise HTTPException(
             status_code=400,
-            detail=f"Quiz ainda em geração. Aguarde conclusão: {status.get('generated_count', 0)}/10",
+            detail=f"Quiz ainda em geração. Aguarde conclusão: {status.get('generated_count', 0)}/{engine.TOTAL_QUESTIONS}",
         )
 
     # Validar número de respostas
-    if len(request.answers) != 10:
+    if len(request.answers) != engine.TOTAL_QUESTIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Esperado 10 respostas, recebido {len(request.answers)}",
+            detail=f"Esperado {engine.TOTAL_QUESTIONS} respostas, recebido {len(request.answers)}",
         )
 
     # Buscar todas as perguntas
     questions = []
-    for i in range(1, 11):
+    for i in range(1, engine.TOTAL_QUESTIONS + 1):
         question = await engine.store.get_question(request.quiz_id, i)
         if question:
             questions.append(question)
 
-    if len(questions) != 10:
+    if len(questions) != engine.TOTAL_QUESTIONS:
         raise HTTPException(
             status_code=500,
             detail=f"Erro: quiz tem apenas {len(questions)} perguntas",
