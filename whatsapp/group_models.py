@@ -315,13 +315,9 @@ class GroupCommand(str, Enum):
     ENTRAR = "ENTRAR"  # Entrar no lobby
     SAIR = "SAIR"  # Sair do quiz/lobby
     PARAR = "PARAR"
-    STATUS = "STATUS"
     RANKING = "RANKING"
     PROXIMA = "PROXIMA"
     AJUDA = "AJUDA"
-    REGULAMENTO = "REGULAMENTO"
-    DICA = "DICA"
-    DUVIDA = "DUVIDA"  # Consultar regulamento com pergunta livre
 
     # Respostas
     A = "A"

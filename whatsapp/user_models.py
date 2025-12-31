@@ -181,7 +181,7 @@ class WelcomeConfig(BaseModel):
     group_name: str = Field(default="", description="Nome do grupo")
     enabled: bool = Field(default=True, description="Se DM de boas-vindas está ativo")
     welcome_message: str = Field(
-        default="Olá {name}! 👋\n\nVi que você entrou no grupo *{group}*.\n\nSou um assistente de IA e estou aqui para ajudar!\n\nMe conta, como posso te ajudar hoje?",
+        default="Olá! 👋\n\nVi que você entrou no grupo.\n\nInstruções: Entre no grupo para começar digite \"Iniciar\"",
         description="Mensagem de boas-vindas (suporta {name}, {group}, {phone})",
     )
     delay_seconds: int = Field(

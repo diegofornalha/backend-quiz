@@ -126,10 +126,10 @@ async def evolution_webhook(
             from whatsapp.group_router import process_group_message, get_group_manager, get_evolution_client as get_group_evolution
 
             group_id = remote_jid
-            group_manager = get_group_manager()
+            group_manager = await get_group_manager()
 
             # Ignorar silenciosamente grupos não autorizados
-            if not group_manager.is_group_allowed(group_id):
+            if not await group_manager.is_group_allowed(group_id):
                 logger.debug(f"Grupo não autorizado (ignorando): {group_id}")
                 return {"status": "ignored", "reason": "group not whitelisted"}
 
@@ -231,25 +231,12 @@ async def process_message(
             await evolution.send_text(user_number, _formatter.format_help())
             return
 
-        if text_upper in ["REGULAMENTO", "REG"]:
-            await evolution.send_text(user_number, _formatter.format_regulamento())
-            return
-
         if text_upper in ["PARAR", "STOP", "CANCELAR"]:
             if state.flow_state in [QuizFlowState.IN_QUIZ, QuizFlowState.IN_CHAT]:
                 state_manager.reset_user(user_number)
                 await evolution.send_text(user_number, _formatter.format_quiz_cancelled())
             else:
                 await evolution.send_text(user_number, "Nenhum quiz ativo para cancelar.")
-            return
-
-        if text_upper == "STATUS":
-            if state.flow_state == QuizFlowState.IN_QUIZ:
-                correct = sum(1 for i, ans in enumerate(state.answers) if ans >= 0)
-                msg = _formatter.format_status(state.current_question, state.score, correct)
-                await evolution.send_text(user_number, msg)
-            else:
-                await evolution.send_text(user_number, "Nenhum quiz ativo. Digite *INICIAR* para começar.")
             return
 
         # Fluxo baseado no estado
@@ -335,25 +322,6 @@ async def handle_in_quiz_state(
     evolution: EvolutionAPIClient,
 ):
     """Usuário no meio do quiz."""
-    # Verificar se é comando de dúvida
-    if text_upper.startswith("DUVIDA") or text_upper.startswith("DÚVIDA"):
-        question_text = text[6:].strip()  # Remover "DUVIDA " do início
-        if not question_text:
-            await evolution.send_text(
-                user_number,
-                "Para tirar uma dúvida, digite: *DUVIDA* seguido da sua pergunta\n\n"
-                "Exemplo: _DUVIDA como funciona o programa?_"
-            )
-            return
-
-        # Entrar em modo chat
-        state.flow_state = QuizFlowState.IN_CHAT
-        state_manager.save_state(state)
-
-        # Processar dúvida via chat do backend
-        await handle_chat_question(user_number, question_text, state, evolution)
-        return
-
     # Verificar se é resposta (A, B, C, D)
     if text_upper in ["A", "B", "C", "D"]:
         await handle_answer(user_number, text_upper, state, state_manager, evolution)
@@ -362,10 +330,7 @@ async def handle_in_quiz_state(
     else:
         await evolution.send_text(
             user_number,
-            "Por favor, responda com:\n"
-            "• *A*, *B*, *C* ou *D*\n"
-            "• *DUVIDA* + sua pergunta\n"
-            "• *STATUS* para ver progresso"
+            "Por favor, responda com *A*, *B*, *C* ou *D*"
         )
 
 

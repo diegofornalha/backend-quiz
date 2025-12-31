@@ -33,8 +33,7 @@ Teste seus conhecimentos sobre o programa e descubra seu nível na trilha de car
 Para começar, digite: *INICIAR*
 
 Você também pode:
-• *AJUDA* - Ver comandos disponíveis
-• *REGULAMENTO* - Consultar regulamento oficial"""
+• *AJUDA* - Ver comandos disponíveis"""
 
     @staticmethod
     def format_help() -> str:
@@ -43,9 +42,6 @@ Você também pode:
 
 *INICIAR* - Começar um novo quiz
 *PARAR* - Cancelar quiz atual
-*DUVIDA* + sua pergunta - Tirar dúvida sobre a questão atual
-*REGULAMENTO* - Link para o regulamento oficial
-*STATUS* - Ver progresso atual
 *AJUDA* - Mostrar esta mensagem
 
 Durante o quiz, responda com:
@@ -76,7 +72,6 @@ Durante o quiz, responda com:
         lines.extend([
             "",
             "💬 *Responda com:* A, B, C ou D",
-            "ℹ️ *Tem dúvida?* Digite: DUVIDA + sua pergunta",
         ])
 
         return "\n".join(lines)
@@ -205,17 +200,6 @@ Durante o quiz, responda com:
         return f"{filled}{empty} {question_num}/{total}"
 
     @staticmethod
-    def format_regulamento() -> str:
-        """Formata link do regulamento."""
-        return """📋 *Regulamento Oficial*
-
-Consulte o regulamento completo do programa Renda Extra Ton:
-
-🔗 https://drive.google.com/file/d/1IGdnWI8CD4ltMSM5bJ5RN4sjP5Tu0REO/view
-
-_Após ler, digite *INICIAR* para fazer o quiz!_"""
-
-    @staticmethod
     def format_error(message: str = "Ocorreu um erro. Tente novamente.") -> str:
         """Formata mensagem de erro.
 
@@ -235,26 +219,3 @@ _Após ler, digite *INICIAR* para fazer o quiz!_"""
 Seu progresso foi perdido.
 
 Digite *INICIAR* para começar um novo quiz"""
-
-    @staticmethod
-    def format_status(question_num: int, score: int, correct: int) -> str:
-        """Formata status atual do quiz.
-
-        Args:
-            question_num: Pergunta atual
-            score: Pontos atuais
-            correct: Respostas corretas até agora
-
-        Returns:
-            Mensagem formatada
-        """
-        progress = WhatsAppFormatter.format_progress(question_num - 1)
-        return f"""📊 *Status do Quiz*
-
-{progress}
-
-📝 Pergunta atual: {question_num}/10
-✅ Respostas corretas: {correct}
-🎯 Pontos: {score}
-
-Digite *CONTINUAR* para voltar ao quiz"""

@@ -201,7 +201,11 @@ async def group_webhook(
 
         # Extrair ID do usuário que enviou
         # Preferir participantAlt (número real) sobre participant (lid)
-        participant = key.get("participantAlt") or key.get("participant", "")
+        participant_alt = key.get("participantAlt", "")
+        participant_lid = key.get("participant", "")
+
+        # Usar participantAlt se disponível, senão participant
+        participant = participant_alt if participant_alt else participant_lid
         if not participant:
             # Fallback para remoteJid (pode ser admin)
             participant = remote_jid
@@ -628,18 +632,6 @@ async def process_group_message(
             await evolution.send_text(group_id, _formatter.format_help())
             return
 
-        if text_normalized == GroupCommand.REGULAMENTO.value:
-            await evolution.send_text(
-                group_id,
-                "📋 *Regulamento Oficial*\n\n"
-                "https://drive.google.com/file/d/1IGdnWI8CD4ltMSM5bJ5RN4sjP5Tu0REO/view"
-            )
-            return
-
-        if text_normalized == GroupCommand.STATUS.value:
-            await evolution.send_text(group_id, _formatter.format_status(session))
-            return
-
         if text_normalized == GroupCommand.RANKING.value:
             await evolution.send_text(group_id, _formatter.format_ranking(session, show_full=True))
             return
@@ -657,23 +649,6 @@ async def process_group_message(
                 )
             else:
                 await evolution.send_text(group_id, f"ℹ️ *{display_name}*, você não está participando do quiz.")
-            return
-
-        # Comando DUVIDA - consulta o regulamento com pergunta livre
-        if text_normalized.startswith(GroupCommand.DUVIDA.value):
-            # Extrair a pergunta após "DUVIDA "
-            question_text = text[len(GroupCommand.DUVIDA.value):].strip()
-            if not question_text:
-                await evolution.send_text(
-                    group_id,
-                    "❓ *Como usar o comando DUVIDA:*\n\n"
-                    "Digite *DUVIDA* seguido da sua pergunta.\n\n"
-                    "Exemplo:\n"
-                    "_DUVIDA como funciona o cashback?_\n"
-                    "_DUVIDA qual o prazo de pagamento?_"
-                )
-            else:
-                await handle_doubt_request(group_id, user_id, user_name, question_text, session, evolution)
             return
 
         # Comandos baseados em estado (usar text_normalized para comandos)
@@ -844,11 +819,6 @@ async def handle_active_state(
         await evolution.send_text(group_id, _formatter.format_quiz_cancelled(user_name))
         return
 
-    # Verificar se é comando DICA
-    if text_normalized == GroupCommand.DICA.value:
-        await handle_hint_request(group_id, session, group_manager, evolution)
-        return
-
     # Verificar se é comando PROXIMA/PROXIMO - avança para próxima pergunta
     if text_normalized in [GroupCommand.PROXIMA.value, "PROXIMO"]:
         await send_next_group_question(group_id, session, group_manager, evolution)
@@ -859,15 +829,11 @@ async def handle_active_state(
         await handle_group_answer(group_id, user_id, user_name, text_upper, session, group_manager, evolution)
         return
 
-    # Só tratar como dúvida se:
-    # 1. Começar explicitamente com "DUVIDA"
-    # 2. OU terminar com "?" (indicando uma pergunta)
-    # Isso evita tratar comentários/feedback como dúvidas
-    is_explicit_doubt = text_normalized.startswith(GroupCommand.DUVIDA.value)
+    # Tratar como dúvida se terminar com "?" (indicando uma pergunta)
     is_question = text_upper.strip().endswith("?")
 
-    if is_explicit_doubt or is_question:
-        original_text = text_normalized.replace(GroupCommand.DUVIDA.value, "").strip() if is_explicit_doubt else text_upper.strip()
+    if is_question:
+        original_text = text_upper.strip()
         if original_text and len(original_text) > 2:  # Ignorar mensagens muito curtas
             await handle_doubt_request(group_id, user_id, user_name, original_text, session, evolution)
 
@@ -1564,7 +1530,9 @@ async def get_active_group_sessions(
                 "group_name": s.group_name,
                 "quiz_id": s.quiz_id,
                 "current_question": s.current_question,
+                "total_questions": s.total_questions,
                 "participants": len(s.participants),
+                "participant_names": [p.user_name for p in s.participants.values()],
                 "state": s.state,
             }
             for s in active

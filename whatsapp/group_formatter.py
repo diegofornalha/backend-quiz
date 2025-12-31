@@ -62,7 +62,6 @@ Digite *INICIAR* para criar o lobby!
 
 💡 *Comandos Úteis:*
 • *RANKING* - Ver placar atual
-• *STATUS* - Ver progresso
 • *AJUDA* - Mostrar comandos"""
 
     @staticmethod
@@ -314,38 +313,6 @@ _Respondam com A, B, C ou D_"""
         return "\n".join(lines)
 
     @staticmethod
-    def format_status(session: GroupQuizSession) -> str:
-        """Status atual do quiz.
-
-        Args:
-            session: Sessão do grupo
-
-        Returns:
-            Mensagem formatada
-        """
-        if session.state == GroupQuizState.IDLE:
-            return "⏸️ Nenhum quiz ativo. Digite *INICIAR* para começar!"
-
-        lines = [
-            "📊 *Status do Quiz*",
-            "",
-            f"📝 Pergunta: {session.current_question}/{session.total_questions}",
-            f"👥 Participantes: {len(session.participants)}",
-            "",
-        ]
-
-        # Top 3 atual
-        top3 = session.get_top_3()
-        if top3:
-            lines.append("🏆 *Top 3 Atual:*")
-            for i, p in enumerate(top3, 1):
-                emoji = RANK_EMOJI.get(i, f"{i}º")
-                display_name = _format_participant_name(p.user_id, p.user_name)
-                lines.append(f"{emoji} {display_name} - {p.total_score} pts")
-
-        return "\n".join(lines)
-
-    @staticmethod
     def format_already_answered(user_name: str) -> str:
         """Mensagem quando usuário tenta responder duas vezes.
 
@@ -371,18 +338,13 @@ Digite *INICIAR* para começar um novo quiz!"""
 
 *Durante o Quiz:*
 • *A, B, C, D* - Responder pergunta
-• *DICA* - Receber dica do regulamento
 • *RANKING* - Ver placar atual
-• *STATUS* - Ver progresso
-• *PROXIMA* - Avançar pergunta (após todos responderem)
+• *PROXIMA* - Avançar pergunta (após responder)
 • *PARAR* - Cancelar quiz
 
 *Geral:*
 • *INICIAR* - Começar novo quiz
-• *REGULAMENTO* - Link do regulamento
-• *AJUDA* - Esta mensagem
-
-🎯 *Dica:* Responda rápido para não perder pontos!"""
+• *AJUDA* - Esta mensagem"""
 
     @staticmethod
     def format_group_not_allowed() -> str:
@@ -448,16 +410,19 @@ Digite *INICIAR* para começar um novo quiz!"""
 
         # Formatar lista de participantes
         if participant_displays:
-            participants_text = '\n'.join([f"* {p}" for p in participant_displays])
+            participants_text = '\n'.join([f"• {p}" for p in participant_displays])
         else:
-            participants_text = "* Nenhum ainda"
+            participants_text = "_Aguardando participantes..._"
 
         return f"""🎮 *Lobby do Quiz Criado!*
+
+📝 *Como participar:*
+Digite *ENTRAR* para entrar na lista
 
 👥 *Participantes ({len(participant_displays)}):*
 {participants_text}
 
-🚀 Digite *COMECAR* quando todos estiverem prontos"""
+🚀 Quando todos estiverem prontos, digite *COMECAR*"""
 
     @staticmethod
     def format_lobby_status(session: GroupQuizSession) -> str:
@@ -475,15 +440,17 @@ Digite *INICIAR* para começar um novo quiz!"""
             for user_id, p in session.participants.items()
         ]
 
+        participants_list = chr(10).join(f'• {name}' for name in participant_displays) if participant_displays else '_Aguardando participantes..._'
+
         return f"""🎮 *Lobby do Quiz*
 
+📝 *Como participar:*
+Digite *ENTRAR* para entrar na lista
+
 👥 *Participantes ({len(participant_displays)}):*
-{chr(10).join(f'• {name}' for name in participant_displays) if participant_displays else '• Nenhum ainda'}
+{participants_list}
 
-🚀 Digite *COMECAR* quando todos estiverem prontos
-
-📢 *Convide mais pessoas:*
-https://chat.whatsapp.com/BKrn8SOMBYG8v9LWtFOTJk"""
+🚀 Quando todos estiverem prontos, digite *COMECAR*"""
 
     @staticmethod
     def format_quiz_started_with_participants(session: GroupQuizSession) -> str:
