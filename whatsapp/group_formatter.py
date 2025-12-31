@@ -28,6 +28,12 @@ def _format_participant_name(user_id: str, user_name: str) -> str:
     Returns:
         Nome formatado (ex: "Bianca (7291)")
     """
+    import re
+
+    # Se o nome já termina com (XXXX), não adicionar novamente
+    if re.search(r'\(\d{4}\)$', user_name):
+        return user_name
+
     clean_id = user_id.split("@")[0]
     digits = "".join(c for c in clean_id if c.isdigit())
     last_4 = digits[-4:] if len(digits) >= 4 else digits

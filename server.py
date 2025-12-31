@@ -43,6 +43,7 @@ from routers import (
 from routers.v1 import v1_router
 from whatsapp import router as whatsapp_router
 from whatsapp.group_router import router as whatsapp_group_router
+from whatsapp.welcome_router import router as whatsapp_welcome_router
 
 # from routers.neo4j_mcp import router as neo4j_mcp_router  # Bridge desnecessário - SDK funciona agora!
 
@@ -209,6 +210,7 @@ app.include_router(fs_router)
 app.include_router(evaluate_router)
 app.include_router(whatsapp_router)  # WhatsApp quiz integration (individual)
 app.include_router(whatsapp_group_router)  # WhatsApp quiz integration (group mode)
+app.include_router(whatsapp_welcome_router)  # WhatsApp welcome DMs (separado)
 # app.include_router(neo4j_mcp_router)  # Não necessário - SDK funciona!
 
 # MCP router é opcional - só inclui se disponível

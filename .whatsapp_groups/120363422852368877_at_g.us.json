@@ -1,12 +1,12 @@
 {
-  "group_id": "120363422852368877@g.us",
-  "group_name": "Quiz Group",
-  "state": "idle",
-  "quiz_id": null,
-  "current_question": 0,
-  "questions_history": [],
-  "participants": {},
-  "started_by": null,
-  "started_at": null,
-  "finished_at": null
+    "group_id": "120363422852368877@g.us",
+    "group_name": "Quiz Group",
+    "state": "idle",
+    "quiz_id": null,
+    "current_question": 0,
+    "questions_history": [],
+    "participants": {},
+    "started_by": null,
+    "started_at": null,
+    "finished_at": null
 }
