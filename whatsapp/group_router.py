@@ -18,6 +18,12 @@ from .group_formatter import GroupMessageFormatter, _format_participant_name
 from .group_manager_kv import GroupStateManagerKV
 from .group_models import GroupCommand, GroupQuizState
 from .quiz_logger import get_quiz_logger, QuizLogger, LogCategory
+from .user_manager_kv import UserManagerKV
+from .user_models import UserProfile, WelcomeConfig
+
+# Import do welcome_router para delegação
+from .welcome_router import process_group_join as welcome_process_group_join
+from .welcome_router import get_user_manager as welcome_get_user_manager
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,7 @@ router = APIRouter(prefix="/whatsapp/group", tags=["WhatsApp Group"])
 
 _group_manager: GroupStateManagerKV | None = None
 _evolution_client: EvolutionAPIClient | None = None
+_user_manager: UserManagerKV | None = None
 _formatter = GroupMessageFormatter()
 
 
@@ -42,6 +49,18 @@ async def get_group_manager() -> GroupStateManagerKV:
         agentfs = await app_state.get_group_agentfs()
         _group_manager = GroupStateManagerKV(agentfs)
     return _group_manager
+
+
+async def get_user_manager() -> UserManagerKV:
+    """Dependency: Gerenciador de usuários usando AgentFS KVStore.
+
+    Usa mesma sessão AgentFS dos grupos para persistência de usuários.
+    """
+    global _user_manager
+    if _user_manager is None:
+        agentfs = await app_state.get_group_agentfs()
+        _user_manager = UserManagerKV(agentfs)
+    return _user_manager
 
 
 def get_evolution_client() -> EvolutionAPIClient:
@@ -88,10 +107,13 @@ async def group_webhook(
     group_manager: GroupStateManagerKV = Depends(get_group_manager),
     evolution: EvolutionAPIClient = Depends(get_evolution_client),
 ):
-    """Webhook para receber mensagens de grupos WhatsApp.
+    """Webhook para receber mensagens e eventos de grupos WhatsApp.
 
-    IMPORTANTE: Este endpoint APENAS processa mensagens de grupos.
-    Mensagens individuais são ignoradas ou recebem mensagem de bloqueio.
+    Processa:
+    - messages.upsert: Mensagens de grupo
+    - groups.participants.update: Entrada/saída de participantes (DM automático)
+
+    Mensagens individuais são ignoradas.
     """
     try:
         body = await request.json()
@@ -103,9 +125,37 @@ async def group_webhook(
         # Log para debug
         print(f"[WEBHOOK] event={event}, keys={list(body.keys())}")
 
+        # =====================================================================
+        # EVENTO: Participante entrou/saiu do grupo
+        # Delegado ao welcome_router (separação de responsabilidades)
+        # =====================================================================
+        if event.lower() in ["groups.participants.update", "group-participants.update", "group_participants_update"]:
+            # Delegar ao welcome_router para processar DMs de boas-vindas
+            user_manager = await welcome_get_user_manager()
+            background_tasks.add_task(
+                welcome_process_group_join,
+                payload=body,
+                user_manager=user_manager,
+                evolution=evolution,
+            )
+
+            # Também processar auto-join no quiz (se houver lobby ativo)
+            background_tasks.add_task(
+                _process_auto_join_quiz,
+                data=data,
+                group_manager=group_manager,
+                evolution=evolution,
+            )
+
+            logger.info(f"[WEBHOOK] Delegando evento de participante ao welcome_router + quiz auto-join")
+            return {"status": "ok", "message": "delegated to welcome_router"}
+
+        # =====================================================================
+        # EVENTO: Mensagem recebida
+        # =====================================================================
         # Evolution API pode enviar como "messages.upsert" ou "MESSAGES_UPSERT"
         if event.lower() != "messages.upsert" and event != "MESSAGES_UPSERT":
-            return {"status": "ignored", "reason": f"event {event} not messages.upsert"}
+            return {"status": "ignored", "reason": f"event {event} not supported"}
 
         message_data = data.get("message", {})
         key = data.get("key", {})
@@ -173,6 +223,254 @@ async def group_webhook(
     except Exception as e:
         logger.error(f"Erro no webhook de grupo: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
+
+
+# =============================================================================
+# PARTICIPANT UPDATE PROCESSOR (Entrada/Saída de grupo)
+# =============================================================================
+
+
+async def process_participant_update(
+    data: dict,
+    group_manager: GroupStateManagerKV,
+    user_manager: UserManagerKV,
+    evolution: EvolutionAPIClient,
+):
+    """Processa evento de entrada/saída de participante no grupo.
+
+    Quando alguém ENTRA no grupo:
+    1. Registra usuário no sistema (AgentFS/Turso)
+    2. Verifica se já recebeu DM de boas-vindas para este grupo
+    3. Se não, envia DM individual com mensagem personalizada
+    4. Marca como welcomed
+
+    Args:
+        data: Dados do evento da Evolution API
+        group_manager: Gerenciador de grupos
+        user_manager: Gerenciador de usuários
+        evolution: Cliente Evolution API
+    """
+    try:
+        # Extrair dados do evento
+        # Formato Evolution API: {"groupJid": "xxx@g.us", "participants": ["xxx@s.whatsapp.net"], "action": "add"}
+        group_id = data.get("groupJid") or data.get("id") or data.get("groupId", "")
+        participants = data.get("participants", [])
+        action = data.get("action", "").lower()
+
+        # Também pode vir como: {"participant": "xxx", "action": "add", ...}
+        if not participants and data.get("participant"):
+            participants = [data.get("participant")]
+
+        logger.info(f"👥 Evento de grupo: {action} em {group_id} - {len(participants)} participantes")
+
+        # Só processar entradas (add/join)
+        if action not in ["add", "join", "invite"]:
+            logger.debug(f"Ação '{action}' ignorada (não é entrada)")
+            return
+
+        # Verificar se grupo está na whitelist
+        if not await group_manager.is_group_allowed(group_id):
+            logger.debug(f"Grupo {group_id} não está na whitelist, ignorando")
+            return
+
+        # Buscar config de welcome do grupo
+        welcome_config = await user_manager.get_welcome_config(group_id)
+        if not welcome_config.enabled:
+            logger.debug(f"Welcome desabilitado para grupo {group_id}")
+            return
+
+        # Buscar nome do grupo (se disponível)
+        group_name = data.get("groupName") or data.get("subject") or welcome_config.group_name or "Grupo"
+        if group_name != welcome_config.group_name:
+            welcome_config.group_name = group_name
+            await user_manager.save_welcome_config(welcome_config)
+
+        # Processar cada participante que entrou
+        for participant_jid in participants:
+            try:
+                await _send_welcome_dm(
+                    participant_jid=participant_jid,
+                    group_id=group_id,
+                    group_name=group_name,
+                    user_manager=user_manager,
+                    evolution=evolution,
+                    welcome_config=welcome_config,
+                )
+
+                # === AUTO-ADICIONAR AO QUIZ SE HOUVER LOBBY ATIVO ===
+                await _auto_add_to_quiz_lobby(
+                    participant_jid=participant_jid,
+                    group_id=group_id,
+                    group_manager=group_manager,
+                    evolution=evolution,
+                )
+            except Exception as e:
+                logger.error(f"Erro ao enviar welcome para {participant_jid}: {e}")
+
+    except Exception as e:
+        logger.error(f"Erro ao processar participant update: {e}", exc_info=True)
+
+
+async def _process_auto_join_quiz(
+    data: dict,
+    group_manager: GroupStateManagerKV,
+    evolution: EvolutionAPIClient,
+):
+    """Processa evento de entrada para auto-join no quiz.
+
+    Args:
+        data: Dados do evento da Evolution API
+        group_manager: Gerenciador de grupos
+        evolution: Cliente Evolution API
+    """
+    try:
+        # Extrair dados do evento
+        group_id = data.get("groupJid") or data.get("id") or data.get("groupId", "")
+        participants_raw = data.get("participants", [])
+        action = data.get("action", "").lower()
+
+        # Só processar entradas
+        if action not in ["add", "join", "invite"]:
+            return
+
+        # Extrair JIDs dos participantes (podem vir como objetos ou strings)
+        participants = []
+        for p in participants_raw:
+            if isinstance(p, dict):
+                # Formato: {"id": "xxx@lid", "phoneNumber": "xxx@s.whatsapp.net"}
+                jid = p.get("id") or p.get("phoneNumber", "")
+                if jid:
+                    participants.append(jid)
+            elif isinstance(p, str):
+                participants.append(p)
+
+        # Processar cada participante
+        for participant_jid in participants:
+            await _auto_add_to_quiz_lobby(
+                participant_jid=participant_jid,
+                group_id=group_id,
+                group_manager=group_manager,
+                evolution=evolution,
+            )
+
+    except Exception as e:
+        logger.error(f"Erro ao processar auto-join quiz: {e}")
+
+
+async def _auto_add_to_quiz_lobby(
+    participant_jid: str,
+    group_id: str,
+    group_manager: GroupStateManagerKV,
+    evolution: EvolutionAPIClient,
+):
+    """Auto-adiciona participante ao quiz se houver lobby ativo.
+
+    Args:
+        participant_jid: JID do participante
+        group_id: ID do grupo
+        group_manager: Gerenciador de grupos
+        evolution: Cliente Evolution API
+    """
+    try:
+        # Verificar se há sessão de quiz em WAITING_START
+        session = await group_manager.get_session(group_id)
+        if not session or session.state != GroupQuizState.WAITING_START:
+            return  # Não há lobby ativo
+
+        # Extrair ID e criar nome temporário
+        user_id = participant_jid.replace("@s.whatsapp.net", "").replace("@lid", "")
+        user_name = f"Novo ({user_id[-4:]})"  # Nome temporário até interagir
+
+        # Verificar se já é participante
+        if user_id in session.participants:
+            return
+
+        # Adicionar ao quiz
+        session.get_or_create_participant(user_id, user_name)
+        await group_manager.save_session(session)
+
+        logger.info(f"[AUTO-JOIN] {user_name} adicionado automaticamente ao quiz no grupo {group_id}")
+
+        # Notificar no grupo
+        await evolution.send_text(
+            group_id,
+            f"👋 *{user_name}* entrou no grupo e foi adicionado ao quiz!\n\n"
+            f"👥 Total: {len(session.participants)} participantes"
+        )
+
+    except Exception as e:
+        logger.error(f"Erro ao auto-adicionar ao quiz: {e}")
+
+
+async def _send_welcome_dm(
+    participant_jid: str,
+    group_id: str,
+    group_name: str,
+    user_manager: UserManagerKV,
+    evolution: EvolutionAPIClient,
+    welcome_config: WelcomeConfig,
+):
+    """Envia DM de boas-vindas para novo participante.
+
+    Args:
+        participant_jid: JID do participante (xxx@s.whatsapp.net)
+        group_id: ID do grupo
+        group_name: Nome do grupo
+        user_manager: Gerenciador de usuários
+        evolution: Cliente Evolution API
+        welcome_config: Configuração de welcome
+    """
+    # Limpar JID para obter número
+    phone = participant_jid.replace("@s.whatsapp.net", "").replace("@lid", "")
+
+    # Registrar que usuário entrou no grupo
+    user, is_new_to_group = await user_manager.user_joined_group(
+        user_id=participant_jid,
+        user_name=phone,  # Nome será atualizado quando interagir
+        group_id=group_id,
+        group_name=group_name,
+    )
+
+    # Verificar se já recebeu welcome para este grupo
+    if user.was_welcomed_for_group(group_id):
+        logger.debug(f"Usuário {phone} já foi welcomed para {group_name}")
+        return
+
+    # Delay para não parecer bot (configurável)
+    if welcome_config.delay_seconds > 0:
+        logger.debug(f"Aguardando {welcome_config.delay_seconds}s antes de enviar DM...")
+        await asyncio.sleep(welcome_config.delay_seconds)
+
+    # Formatar mensagem de boas-vindas
+    welcome_message = welcome_config.format_welcome(
+        name=user.display_name or phone,
+        phone=phone,
+    )
+
+    # Enviar DM individual
+    logger.info(f"📤 Enviando DM de boas-vindas para {phone} (grupo: {group_name})")
+
+    try:
+        await evolution.send_text(
+            number=phone,
+            text=welcome_message,
+        )
+
+        # Marcar como welcomed
+        await user_manager.mark_user_welcomed(participant_jid, group_id)
+
+        # Registrar mensagem no histórico
+        await user_manager.add_conversation_message(
+            user_id=participant_jid,
+            role="assistant",
+            content=welcome_message,
+        )
+
+        logger.info(f"✅ DM enviado com sucesso para {phone}")
+
+    except Exception as e:
+        logger.error(f"❌ Falha ao enviar DM para {phone}: {e}")
+        raise
 
 
 # =============================================================================
@@ -1316,4 +1614,281 @@ async def get_group_logs(group_id: str, limit: int = 50):
         }
     except Exception as e:
         logger.error(f"Erro ao buscar logs do grupo: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# =============================================================================
+# USER MANAGEMENT ENDPOINTS (Welcome DM / Relacionamento)
+# =============================================================================
+
+
+@router.get("/users/stats")
+async def get_user_stats(
+    user_manager: UserManagerKV = Depends(get_user_manager),
+):
+    """Retorna estatísticas de usuários."""
+    try:
+        stats = await user_manager.get_stats()
+        return {"status": "ok", "data": stats}
+    except Exception as e:
+        logger.error(f"Erro ao buscar stats: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/users/{user_id}")
+async def get_user_profile(
+    user_id: str,
+    user_manager: UserManagerKV = Depends(get_user_manager),
+):
+    """Busca perfil de um usuário específico."""
+    try:
+        # Adicionar sufixo se não tiver
+        if not user_id.endswith("@s.whatsapp.net"):
+            user_id = f"{user_id}@s.whatsapp.net"
+
+        user = await user_manager.get_user(user_id)
+        return {"status": "ok", "data": user.model_dump(mode="json")}
+    except Exception as e:
+        logger.error(f"Erro ao buscar usuário: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/users/group/{group_id}")
+async def list_users_in_group(
+    group_id: str,
+    user_manager: UserManagerKV = Depends(get_user_manager),
+):
+    """Lista todos os usuários de um grupo."""
+    try:
+        users = await user_manager.get_users_in_group(group_id)
+        return {
+            "status": "ok",
+            "total": len(users),
+            "users": [u.model_dump(mode="json") for u in users],
+        }
+    except Exception as e:
+        logger.error(f"Erro ao listar usuários do grupo: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# =============================================================================
+# WELCOME CONFIG ENDPOINTS
+# =============================================================================
+
+
+@router.get("/welcome/{group_id}")
+async def get_welcome_config(
+    group_id: str,
+    user_manager: UserManagerKV = Depends(get_user_manager),
+):
+    """Busca configuração de boas-vindas de um grupo."""
+    try:
+        config = await user_manager.get_welcome_config(group_id)
+        return {"status": "ok", "data": config.model_dump(mode="json")}
+    except Exception as e:
+        logger.error(f"Erro ao buscar welcome config: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/welcome/{group_id}")
+async def update_welcome_config(
+    group_id: str,
+    request: Request,
+    user_manager: UserManagerKV = Depends(get_user_manager),
+):
+    """Atualiza configuração de boas-vindas de um grupo.
+
+    Body JSON:
+    {
+        "enabled": true,
+        "welcome_message": "Olá {name}! Bem-vindo ao {group}!",
+        "group_name": "Meu Grupo",
+        "delay_seconds": 5,
+        "ai_enabled": true
+    }
+    """
+    try:
+        body = await request.json()
+        config = await user_manager.get_welcome_config(group_id)
+
+        # Atualizar campos fornecidos
+        if "enabled" in body:
+            config.enabled = body["enabled"]
+        if "welcome_message" in body:
+            config.welcome_message = body["welcome_message"]
+        if "group_name" in body:
+            config.group_name = body["group_name"]
+        if "delay_seconds" in body:
+            config.delay_seconds = body["delay_seconds"]
+        if "ai_enabled" in body:
+            config.ai_enabled = body["ai_enabled"]
+        if "follow_up_enabled" in body:
+            config.follow_up_enabled = body["follow_up_enabled"]
+
+        await user_manager.save_welcome_config(config)
+
+        return {"status": "ok", "data": config.model_dump(mode="json")}
+    except Exception as e:
+        logger.error(f"Erro ao atualizar welcome config: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/welcome/{group_id}/toggle")
+async def toggle_welcome(
+    group_id: str,
+    enabled: bool = True,
+    user_manager: UserManagerKV = Depends(get_user_manager),
+):
+    """Ativa/desativa boas-vindas para um grupo."""
+    try:
+        config = await user_manager.toggle_welcome(group_id, enabled)
+        return {
+            "status": "ok",
+            "message": f"Welcome {'ativado' if enabled else 'desativado'} para {group_id}",
+            "data": config.model_dump(mode="json"),
+        }
+    except Exception as e:
+        logger.error(f"Erro ao toggle welcome: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# =============================================================================
+# WEBHOOK SETUP ENDPOINTS
+# =============================================================================
+
+
+@router.post("/setup/webhook")
+async def setup_evolution_webhook(
+    request: Request,
+    evolution: EvolutionAPIClient = Depends(get_evolution_client),
+):
+    """Configura webhook da Evolution API para receber eventos de grupo.
+
+    Body JSON:
+    {
+        "webhook_url": "https://seu-dominio.com/whatsapp/group/webhook"
+    }
+
+    Eventos configurados:
+    - MESSAGES_UPSERT: Mensagens recebidas
+    - GROUPS_UPDATE: Atualizações de grupo
+    - GROUP_PARTICIPANTS_UPDATE: Entrada/saída de participantes
+    """
+    try:
+        body = await request.json()
+        webhook_url = body.get("webhook_url")
+
+        if not webhook_url:
+            return {"status": "error", "message": "webhook_url é obrigatório"}
+
+        # Eventos necessários para funcionalidade completa
+        events = [
+            "MESSAGES_UPSERT",
+            "GROUPS_UPDATE",
+            "GROUP_PARTICIPANTS_UPDATE",
+            "GROUPS_UPSERT",
+        ]
+
+        result = await evolution.set_webhook(webhook_url, events)
+
+        return {
+            "status": "ok",
+            "message": "Webhook configurado com sucesso",
+            "webhook_url": webhook_url,
+            "events": events,
+            "response": result,
+        }
+    except Exception as e:
+        logger.error(f"Erro ao configurar webhook: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/send-dm/{phone}")
+async def send_dm_to_user(
+    phone: str,
+    request: Request,
+    evolution: EvolutionAPIClient = Depends(get_evolution_client),
+    user_manager: UserManagerKV = Depends(get_user_manager),
+):
+    """Envia mensagem DM para um usuário específico.
+
+    Body JSON:
+    {
+        "message": "Olá! Como posso ajudar?"
+    }
+    """
+    try:
+        body = await request.json()
+        message = body.get("message")
+
+        if not message:
+            return {"status": "error", "message": "message é obrigatório"}
+
+        # Limpar número
+        phone_clean = phone.replace("+", "").replace("-", "").replace(" ", "")
+
+        # Enviar mensagem
+        result = await evolution.send_text(phone_clean, message)
+
+        # Registrar no histórico do usuário
+        user_id = f"{phone_clean}@s.whatsapp.net"
+        await user_manager.add_conversation_message(user_id, "assistant", message)
+
+        return {
+            "status": "ok",
+            "message": "DM enviado com sucesso",
+            "phone": phone_clean,
+            "response": result,
+        }
+    except Exception as e:
+        logger.error(f"Erro ao enviar DM: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/send-welcome/{group_id}/{phone}")
+async def send_manual_welcome(
+    group_id: str,
+    phone: str,
+    evolution: EvolutionAPIClient = Depends(get_evolution_client),
+    user_manager: UserManagerKV = Depends(get_user_manager),
+):
+    """Envia mensagem de boas-vindas manualmente para um usuário.
+
+    Útil para reenviar welcome ou testar configuração.
+    """
+    try:
+        # Limpar número
+        phone_clean = phone.replace("+", "").replace("-", "").replace(" ", "")
+        user_id = f"{phone_clean}@s.whatsapp.net"
+
+        # Buscar config de welcome
+        config = await user_manager.get_welcome_config(group_id)
+
+        # Buscar usuário
+        user = await user_manager.get_user(user_id)
+
+        # Formatar mensagem
+        welcome_message = config.format_welcome(
+            name=user.display_name or phone_clean,
+            phone=phone_clean,
+        )
+
+        # Enviar
+        result = await evolution.send_text(phone_clean, welcome_message)
+
+        # Marcar como welcomed
+        await user_manager.mark_user_welcomed(user_id, group_id)
+
+        # Registrar no histórico
+        await user_manager.add_conversation_message(user_id, "assistant", welcome_message)
+
+        return {
+            "status": "ok",
+            "message": "Welcome enviado com sucesso",
+            "phone": phone_clean,
+            "group_id": group_id,
+            "response": result,
+        }
+    except Exception as e:
+        logger.error(f"Erro ao enviar welcome manual: {e}")
         return {"status": "error", "message": str(e)}
