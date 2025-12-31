@@ -329,10 +329,6 @@ async def _process_auto_join_quiz(
         participants_raw = data.get("participants", [])
         action = data.get("action", "").lower()
 
-        # Só processar entradas
-        if action not in ["add", "join", "invite"]:
-            return
-
         # Extrair JIDs dos participantes (podem vir como objetos ou strings)
         participants = []
         for p in participants_raw:
@@ -344,14 +340,24 @@ async def _process_auto_join_quiz(
             elif isinstance(p, str):
                 participants.append(p)
 
-        # Processar cada participante
+        # Processar cada participante baseado na ação
         for participant_jid in participants:
-            await _auto_add_to_quiz_lobby(
-                participant_jid=participant_jid,
-                group_id=group_id,
-                group_manager=group_manager,
-                evolution=evolution,
-            )
+            if action in ["add", "join", "invite"]:
+                # Auto-adicionar ao quiz se houver lobby ativo
+                await _auto_add_to_quiz_lobby(
+                    participant_jid=participant_jid,
+                    group_id=group_id,
+                    group_manager=group_manager,
+                    evolution=evolution,
+                )
+            elif action in ["remove", "leave"]:
+                # Remover do quiz se estiver participando
+                await _auto_remove_from_quiz(
+                    participant_jid=participant_jid,
+                    group_id=group_id,
+                    group_manager=group_manager,
+                    evolution=evolution,
+                )
 
     except Exception as e:
         logger.error(f"Erro ao processar auto-join quiz: {e}")
@@ -400,6 +406,55 @@ async def _auto_add_to_quiz_lobby(
 
     except Exception as e:
         logger.error(f"Erro ao auto-adicionar ao quiz: {e}")
+
+
+async def _auto_remove_from_quiz(
+    participant_jid: str,
+    group_id: str,
+    group_manager: GroupStateManagerKV,
+    evolution: EvolutionAPIClient,
+):
+    """Remove participante do quiz quando sai do grupo.
+
+    Args:
+        participant_jid: JID do participante
+        group_id: ID do grupo
+        group_manager: Gerenciador de grupos
+        evolution: Cliente Evolution API
+    """
+    try:
+        # Verificar se há sessão de quiz ativa
+        session = await group_manager.get_session(group_id)
+        if not session or session.state == GroupQuizState.IDLE:
+            return  # Não há quiz ativo
+
+        # Extrair ID do usuário
+        user_id = participant_jid.replace("@s.whatsapp.net", "").replace("@lid", "")
+
+        # Verificar se é participante
+        if user_id not in session.participants:
+            return
+
+        # Obter nome antes de remover
+        participant = session.participants.get(user_id)
+        user_name = participant.user_name if participant else f"Usuário ({user_id[-4:]})"
+
+        # Remover do quiz
+        del session.participants[user_id]
+        await group_manager.save_session(session)
+
+        logger.info(f"[AUTO-REMOVE] {user_name} removido do quiz ao sair do grupo {group_id}")
+
+        # Notificar apenas se ainda houver participantes
+        if session.participants:
+            await evolution.send_text(
+                group_id,
+                f"👋 *{user_name}* saiu do grupo e foi removido do quiz.\n\n"
+                f"👥 Restam: {len(session.participants)} participantes"
+            )
+
+    except Exception as e:
+        logger.error(f"Erro ao remover do quiz: {e}")
 
 
 async def _send_welcome_dm(
