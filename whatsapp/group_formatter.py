@@ -242,12 +242,13 @@ _Respondam com A, B, C ou D_"""
         limit = len(ranking) if show_full else min(3, len(ranking))
         for i, participant in enumerate(ranking[:limit], 1):
             emoji = RANK_EMOJI.get(i, f"{i}º")
-            percentage = participant.percentage
+            # Calcular percentual baseado no total de perguntas do quiz
+            percentage = (participant.correct_answers / session.total_questions * 100) if session.total_questions > 0 else 0
             display_name = _format_participant_name(participant.user_id, participant.user_name)
             lines.append(
                 f"{emoji} *{display_name}*\n"
                 f"    🎯 {participant.total_score} pts | "
-                f"✅ {participant.correct_answers}/{participant.total_answers} "
+                f"✅ {participant.correct_answers}/{session.total_questions} "
                 f"({percentage:.0f}%)"
             )
 
@@ -279,7 +280,8 @@ _Respondam com A, B, C ou D_"""
         # Top 3
         for i, participant in enumerate(ranking[:3], 1):
             emoji = RANK_EMOJI.get(i, "")
-            percentage = participant.percentage
+            # Calcular percentual baseado no total de perguntas do quiz
+            percentage = (participant.correct_answers / session.total_questions * 100) if session.total_questions > 0 else 0
             display_name = _format_participant_name(participant.user_id, participant.user_name)
             lines.append(
                 f"{emoji} *{display_name}*\n"
