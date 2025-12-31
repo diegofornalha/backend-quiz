@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import app_state
-from .evolution_client import EvolutionAPIClient
+from .evolution_client import EvolutionAPIClient, get_evolution_client
 from .user_manager_kv import UserManagerKV
 from .user_models import WelcomeConfig
 
@@ -42,11 +43,6 @@ async def get_user_manager() -> UserManagerKV:
         _user_manager = UserManagerKV(agentfs)
         logger.info("UserManagerKV inicializado para Welcome DMs")
     return _user_manager
-
-
-def get_evolution_client() -> EvolutionAPIClient:
-    """Obtém cliente Evolution API."""
-    return EvolutionAPIClient()
 
 
 # =============================================================================
@@ -313,8 +309,8 @@ async def _send_goodbye_dm(
         # Mensagem de despedida com link para voltar
         name = user.display_name or user_name or phone_clean
 
-        # Link do grupo Quiz - Ton
-        invite_link = "https://chat.whatsapp.com/BKrn8SOMBYG8v9LWtFOTJk"
+        # Link do grupo Quiz - Ton (configurável via .env)
+        invite_link = os.getenv("WHATSAPP_GROUP_INVITE_LINK", "https://chat.whatsapp.com/BKrn8SOMBYG8v9LWtFOTJk")
 
         goodbye_message = (
             f"Oi! 👋\n\n"

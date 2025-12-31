@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+import os
+from typing import Any
 
 import httpx
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -260,3 +258,45 @@ class EvolutionAPIClient:
         except httpx.HTTPError as e:
             logger.error(f"Erro ao configurar webhook: {e}")
             raise
+
+
+# =============================================================================
+# FACTORY - Singleton para Evolution Client
+# =============================================================================
+
+_evolution_client: EvolutionAPIClient | None = None
+
+
+def get_evolution_client() -> EvolutionAPIClient:
+    """Factory: Retorna instância singleton do Evolution API Client.
+
+    Carrega configuração de variáveis de ambiente:
+    - EVOLUTION_API_URL: URL base da API (default: http://localhost:8080)
+    - EVOLUTION_API_KEY: API key (obrigatório)
+    - EVOLUTION_INSTANCE: Nome da instância (default: quiz-instance)
+
+    Returns:
+        EvolutionAPIClient configurado
+
+    Raises:
+        RuntimeError: Se EVOLUTION_API_KEY não estiver configurado
+    """
+    global _evolution_client
+    if _evolution_client is None:
+        base_url = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
+        api_key = os.getenv("EVOLUTION_API_KEY", "")
+        instance = os.getenv("EVOLUTION_INSTANCE", "quiz-instance")
+
+        if not api_key:
+            raise RuntimeError(
+                "EVOLUTION_API_KEY não configurado no .env. "
+                "Configure as variáveis de ambiente da Evolution API."
+            )
+
+        _evolution_client = EvolutionAPIClient(
+            base_url=base_url,
+            api_key=api_key,
+            instance_name=instance,
+        )
+
+    return _evolution_client

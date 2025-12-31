@@ -13,7 +13,7 @@ import app_state
 from quiz.engine.quiz_engine import QuizEngine
 from quiz.engine.scoring_engine import QuizScoringEngine
 
-from .evolution_client import EvolutionAPIClient
+from .evolution_client import EvolutionAPIClient, get_evolution_client
 from .group_formatter import GroupMessageFormatter, _format_participant_name
 from .group_manager_kv import GroupStateManagerKV
 from .group_models import GroupCommand, GroupQuizState
@@ -34,7 +34,6 @@ router = APIRouter(prefix="/whatsapp/group", tags=["WhatsApp Group"])
 # =============================================================================
 
 _group_manager: GroupStateManagerKV | None = None
-_evolution_client: EvolutionAPIClient | None = None
 _user_manager: UserManagerKV | None = None
 _formatter = GroupMessageFormatter()
 
@@ -61,26 +60,6 @@ async def get_user_manager() -> UserManagerKV:
         agentfs = await app_state.get_group_agentfs()
         _user_manager = UserManagerKV(agentfs)
     return _user_manager
-
-
-def get_evolution_client() -> EvolutionAPIClient:
-    """Dependency: Cliente Evolution API."""
-    global _evolution_client
-    if _evolution_client is None:
-        base_url = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
-        api_key = os.getenv("EVOLUTION_API_KEY", "")
-        instance = os.getenv("EVOLUTION_INSTANCE", "quiz-instance")
-
-        if not api_key:
-            raise RuntimeError("EVOLUTION_API_KEY não configurado")
-
-        _evolution_client = EvolutionAPIClient(
-            base_url=base_url,
-            api_key=api_key,
-            instance_name=instance,
-        )
-
-    return _evolution_client
 
 
 async def get_quiz_engine() -> QuizEngine:
@@ -117,13 +96,12 @@ async def group_webhook(
     """
     try:
         body = await request.json()
-        print(f"[WEBHOOK] Recebido: {body}")  # Debug temporário
+        logger.debug(f"[WEBHOOK] Recebido: {body}")
 
         event = body.get("event", "")
         data = body.get("data", {})
 
-        # Log para debug
-        print(f"[WEBHOOK] event={event}, keys={list(body.keys())}")
+        logger.debug(f"[WEBHOOK] event={event}, keys={list(body.keys())}")
 
         # =====================================================================
         # EVENTO: Participante entrou/saiu do grupo
@@ -194,7 +172,7 @@ async def group_webhook(
         elif message_type == "extendedTextMessage":
             text = message_data.get("extendedTextMessage", {}).get("text", "")
 
-        print(f"[WEBHOOK] group={remote_jid}, type={message_type}, text={text[:50] if text else 'EMPTY'}")
+        logger.debug(f"[WEBHOOK] group={remote_jid}, type={message_type}, text={text[:50] if text else 'EMPTY'}")
 
         if not text:
             return {"status": "ignored", "reason": "no text in message"}
@@ -577,15 +555,14 @@ async def process_group_message(
         # Buscar sessão do grupo
         session = await group_manager.get_session(group_id)
 
-        print(f"[PROCESS] Mensagem de {user_name} ({user_id}): '{text}' -> '{text_normalized}' (state: {session.state})")
+        logger.debug(f"[PROCESS] Mensagem de {user_name} ({user_id}): '{text}' -> '{text_normalized}' (state: {session.state})")
 
         # Número do bot (Evolution) - NUNCA deve ser participante
-        BOT_NUMBER = "5521936182339"
-        is_bot = user_id == BOT_NUMBER or user_id.startswith(BOT_NUMBER)
+        bot_number = os.getenv("BOT_PHONE_NUMBER", "5521936182339")
+        is_bot = user_id == bot_number or user_id.startswith(bot_number)
 
         if is_bot:
-            # Ignorar mensagens do próprio bot
-            print(f"[BOT] Ignorando mensagem do próprio bot")
+            logger.debug(f"[BOT] Ignorando mensagem do próprio bot")
             return
 
         # === CHECK-IN AUTOMÁTICO (apenas durante quiz ACTIVE) ===
@@ -625,7 +602,7 @@ async def process_group_message(
                         f"_Aguarde sua vez! 🧠✨_"
                     )
                 await evolution.send_text(group_id, welcome_msg)
-                print(f"[CHECK-IN] Novo participante: {user_name} ({user_id}) | +{added_questions} perguntas")
+                logger.info(f"[CHECK-IN] Novo participante: {user_name} ({user_id}) | +{added_questions} perguntas")
 
         # Comandos globais (usando text_normalized para aceitar acentos)
         if text_normalized == GroupCommand.AJUDA.value:
@@ -1276,9 +1253,8 @@ async def handle_group_answer(
                 user_id=user_id,
                 quiz_id=session.quiz_id if session else None,
             )
-        except:
-            pass
-        # Erro silencioso - não mostrar ao usuário, apenas logar
+        except Exception:
+            pass  # Ignora erros ao tentar logar - não crítico
 
 
 async def generate_answer_explanation(

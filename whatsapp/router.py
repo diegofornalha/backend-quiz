@@ -13,7 +13,7 @@ import app_state
 from quiz.engine.quiz_engine import QuizEngine
 from quiz.engine.scoring_engine import QuizScoringEngine
 
-from .evolution_client import EvolutionAPIClient
+from .evolution_client import EvolutionAPIClient, get_evolution_client
 from .message_formatter import WhatsAppFormatter
 from .models import EvolutionWebhookMessage, QuizFlowState
 from .user_state import UserStateManager
@@ -27,7 +27,6 @@ router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
 # =============================================================================
 
 _state_manager: UserStateManager | None = None
-_evolution_client: EvolutionAPIClient | None = None
 _formatter = WhatsAppFormatter()
 
 
@@ -37,30 +36,6 @@ def get_state_manager() -> UserStateManager:
     if _state_manager is None:
         _state_manager = UserStateManager()
     return _state_manager
-
-
-def get_evolution_client() -> EvolutionAPIClient:
-    """Dependency: Cliente Evolution API."""
-    global _evolution_client
-    if _evolution_client is None:
-        # Carregar config do .env
-        base_url = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
-        api_key = os.getenv("EVOLUTION_API_KEY", "")
-        instance = os.getenv("EVOLUTION_INSTANCE", "quiz-instance")
-
-        if not api_key:
-            raise RuntimeError(
-                "EVOLUTION_API_KEY não configurado no .env. "
-                "Configure as variáveis de ambiente da Evolution API."
-            )
-
-        _evolution_client = EvolutionAPIClient(
-            base_url=base_url,
-            api_key=api_key,
-            instance_name=instance,
-        )
-
-    return _evolution_client
 
 
 async def get_quiz_engine() -> QuizEngine:

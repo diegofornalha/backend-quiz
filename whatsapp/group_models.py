@@ -274,23 +274,16 @@ class GroupQuizSession(BaseModel):
         Útil quando há participantes com nomes iguais.
 
         Returns:
-            Nome formatado (ex: "Bianca (****6614)") ou None
+            Nome formatado (ex: "Bianca (6614)") ou None
         """
         if not self.current_turn_user_id:
             return None
         participant = self.participants.get(self.current_turn_user_id)
         if not participant:
             return None
-
-        # Extrair últimos 4 dígitos do user_id
-        user_id = self.current_turn_user_id
-        # Remover sufixos como @lid, @s.whatsapp.net
-        clean_id = user_id.split("@")[0]
-        # Pegar apenas dígitos
-        digits = "".join(c for c in clean_id if c.isdigit())
-        last_4 = digits[-4:] if len(digits) >= 4 else digits
-
-        return f"{participant.user_name} ({last_4})"
+        # Usar função centralizada de formatação
+        from .group_formatter import _format_participant_name
+        return _format_participant_name(self.current_turn_user_id, participant.user_name)
 
     def get_participant_display(self, user_id: str) -> str | None:
         """Retorna nome + últimos 4 dígitos do número de um participante.
@@ -304,13 +297,9 @@ class GroupQuizSession(BaseModel):
         participant = self.participants.get(user_id)
         if not participant:
             return None
-
-        # Extrair últimos 4 dígitos
-        clean_id = user_id.split("@")[0]
-        digits = "".join(c for c in clean_id if c.isdigit())
-        last_4 = digits[-4:] if len(digits) >= 4 else digits
-
-        return f"{participant.user_name} ({last_4})"
+        # Usar função centralizada de formatação
+        from .group_formatter import _format_participant_name
+        return _format_participant_name(user_id, participant.user_name)
 
     def add_participant_to_turn_order(self, user_id: str) -> None:
         """Adiciona participante à ordem de turnos se não estiver.
