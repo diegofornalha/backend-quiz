@@ -4,6 +4,7 @@
     "state": "idle",
     "quiz_id": null,
     "current_question": 0,
+    "total_questions": 0,
     "questions_history": [],
     "participants": {},
     "started_by": null,

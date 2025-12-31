@@ -200,7 +200,8 @@ async def group_webhook(
             return {"status": "ignored", "reason": "no text in message"}
 
         # Extrair ID do usuário que enviou
-        participant = key.get("participant", "")  # Quem enviou no grupo
+        # Preferir participantAlt (número real) sobre participant (lid)
+        participant = key.get("participantAlt") or key.get("participant", "")
         if not participant:
             # Fallback para remoteJid (pode ser admin)
             participant = remote_jid
@@ -330,11 +331,12 @@ async def _process_auto_join_quiz(
         action = data.get("action", "").lower()
 
         # Extrair JIDs dos participantes (podem vir como objetos ou strings)
+        # Preferir phoneNumber (número real) sobre id (lid) para consistência
         participants = []
         for p in participants_raw:
             if isinstance(p, dict):
                 # Formato: {"id": "xxx@lid", "phoneNumber": "xxx@s.whatsapp.net"}
-                jid = p.get("id") or p.get("phoneNumber", "")
+                jid = p.get("phoneNumber") or p.get("id", "")
                 if jid:
                     participants.append(jid)
             elif isinstance(p, str):

@@ -79,7 +79,7 @@ class GroupQuizSession(BaseModel):
     state: GroupQuizState = Field(default=GroupQuizState.IDLE)
     quiz_id: str | None = Field(default=None, description="ID do quiz ativo")
     current_question: int = Field(default=0, description="Pergunta atual (0-N)")
-    total_questions: int = Field(default=10, description="Total de perguntas (dinâmico)")
+    total_questions: int = Field(default=0, description="Total de perguntas (dinâmico, 3 por participante)")
     questions_history: list[QuestionState] = Field(
         default_factory=list,
         description="Histórico de perguntas e respostas",
