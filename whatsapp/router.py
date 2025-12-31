@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
@@ -13,9 +12,10 @@ import app_state
 from quiz.engine.quiz_engine import QuizEngine
 from quiz.engine.scoring_engine import QuizScoringEngine
 
+from .constants import QUIZ_ENGINE_TIMEOUT
 from .evolution_client import EvolutionAPIClient, get_evolution_client
 from .message_formatter import WhatsAppFormatter
-from .models import EvolutionWebhookMessage, QuizFlowState
+from .models import EvolutionWebhookMessage, QuizFlowState, UserQuizState
 from .user_state import UserStateManager
 
 logger = logging.getLogger(__name__)
@@ -240,7 +240,7 @@ async def process_message(
 async def handle_idle_state(
     user_number: str,
     text_upper: str,
-    state: Any,
+    state: UserQuizState,
     state_manager: UserStateManager,
     evolution: EvolutionAPIClient,
 ):
@@ -292,7 +292,7 @@ async def handle_in_quiz_state(
     user_number: str,
     text: str,
     text_upper: str,
-    state: Any,
+    state: UserQuizState,
     state_manager: UserStateManager,
     evolution: EvolutionAPIClient,
 ):
@@ -312,7 +312,7 @@ async def handle_in_quiz_state(
 async def handle_answer(
     user_number: str,
     answer: str,
-    state: Any,
+    state: UserQuizState,
     state_manager: UserStateManager,
     evolution: EvolutionAPIClient,
 ):
@@ -324,7 +324,7 @@ async def handle_answer(
         scoring = QuizScoringEngine()
 
         # Buscar pergunta atual
-        question = await engine.get_question(state.quiz_id, state.current_question, timeout=30.0)
+        question = await engine.get_question(state.quiz_id, state.current_question, timeout=QUIZ_ENGINE_TIMEOUT)
         if not question:
             await evolution.send_text(user_number, _formatter.format_error("Erro ao carregar pergunta."))
             return
@@ -367,7 +367,7 @@ async def handle_answer(
 
 async def send_next_question(
     user_number: str,
-    state: Any,
+    state: UserQuizState,
     state_manager: UserStateManager,
     evolution: EvolutionAPIClient,
 ):
@@ -392,7 +392,7 @@ async def send_next_question(
         rag = await app_state.get_rag()
         engine = QuizEngine(agentfs=agentfs, rag=rag)
 
-        question = await engine.get_question(state.quiz_id, state.current_question, timeout=30.0)
+        question = await engine.get_question(state.quiz_id, state.current_question, timeout=QUIZ_ENGINE_TIMEOUT)
         if not question:
             await evolution.send_text(user_number, _formatter.format_error("Erro ao carregar próxima pergunta."))
             return
@@ -408,7 +408,7 @@ async def send_next_question(
 
 async def send_final_results(
     user_number: str,
-    state: Any,
+    state: UserQuizState,
     state_manager: UserStateManager,
     evolution: EvolutionAPIClient,
 ):
@@ -458,7 +458,7 @@ async def send_final_results(
 async def handle_chat_question(
     user_number: str,
     question: str,
-    state: Any,
+    state: UserQuizState,
     evolution: EvolutionAPIClient,
 ):
     """Processa dúvida do usuário via chat."""
@@ -468,7 +468,7 @@ async def handle_chat_question(
         rag = await app_state.get_rag()
         engine = QuizEngine(agentfs=agentfs, rag=rag)
 
-        current_q = await engine.get_question(state.quiz_id, state.current_question, timeout=30.0)
+        current_q = await engine.get_question(state.quiz_id, state.current_question, timeout=QUIZ_ENGINE_TIMEOUT)
         if not current_q:
             await evolution.send_text(user_number, _formatter.format_error("Erro ao buscar pergunta."))
             return
@@ -516,7 +516,7 @@ Opções: {" | ".join(f"{o.label}) {o.text}" for o in current_q.options)}
 async def handle_in_chat_state(
     user_number: str,
     text: str,
-    state: Any,
+    state: UserQuizState,
     state_manager: UserStateManager,
     evolution: EvolutionAPIClient,
 ):
@@ -542,7 +542,7 @@ async def handle_in_chat_state(
 async def handle_finished_state(
     user_number: str,
     text_upper: str,
-    state: Any,
+    state: UserQuizState,
     state_manager: UserStateManager,
     evolution: EvolutionAPIClient,
 ):

@@ -5,25 +5,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 import app_state
+from a2a_rag_sdk import ClaudeRAG
 from quiz.engine.quiz_engine import QuizEngine
 from quiz.engine.scoring_engine import QuizScoringEngine
+from quiz.models.schemas import QuizQuestion
 
+from .constants import QUIZ_ENGINE_TIMEOUT
 from .evolution_client import EvolutionAPIClient, get_evolution_client
 from .group_formatter import GroupMessageFormatter, _format_participant_name
 from .group_manager_kv import GroupStateManagerKV
-from .group_models import GroupCommand, GroupQuizState
-from .quiz_logger import get_quiz_logger, QuizLogger, LogCategory
+from .group_models import GroupCommand, GroupQuizSession, GroupQuizState
+from .quiz_logger import get_quiz_logger, LogCategory, QuizLogger
 from .user_manager_kv import UserManagerKV
 from .user_models import UserProfile, WelcomeConfig
-
-# Import do welcome_router para delegação
-from .welcome_router import process_group_join as welcome_process_group_join
 from .welcome_router import get_user_manager as welcome_get_user_manager
+from .welcome_router import process_group_join as welcome_process_group_join
 
 logger = logging.getLogger(__name__)
 
@@ -673,7 +673,7 @@ async def handle_idle_state(
     user_id: str,
     user_name: str,
     text_normalized: str,
-    session: Any,
+    session: GroupQuizSession,
     group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
@@ -697,7 +697,7 @@ async def handle_waiting_start_state(
     user_id: str,
     user_name: str,
     text_normalized: str,
-    session: Any,
+    session: GroupQuizSession,
     group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
@@ -799,7 +799,7 @@ async def handle_active_state(
     user_name: str,
     text_normalized: str,
     text_upper: str,
-    session: Any,
+    session: GroupQuizSession,
     group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
@@ -834,7 +834,7 @@ async def handle_doubt_request(
     user_id: str,
     user_name: str,
     question_text: str,
-    session: Any | None,
+    session: GroupQuizSession | None,
     evolution: EvolutionAPIClient,
 ):
     """Responde dúvida sobre o regulamento usando RAG.
@@ -910,7 +910,7 @@ Responda de forma amigável, sem prefixos como "Resposta:" ou similares."""
             rag_engine = await app_state.get_rag()
             engine = QuizEngine(agentfs=agentfs, rag=rag_engine)
 
-            question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+            question = await engine.get_question(session.quiz_id, session.current_question, timeout=QUIZ_ENGINE_TIMEOUT)
             if question and hasattr(question, 'options'):
                 options_lines = []
                 for opt in question.options:
@@ -939,7 +939,7 @@ Responda de forma amigável, sem prefixos como "Resposta:" ou similares."""
 
 async def handle_hint_request(
     group_id: str,
-    session: Any,
+    session: GroupQuizSession,
     group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
@@ -967,7 +967,7 @@ async def handle_hint_request(
         rag = await app_state.get_rag()
         engine = QuizEngine(agentfs=agentfs, rag=rag)
 
-        question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+        question = await engine.get_question(session.quiz_id, session.current_question, timeout=QUIZ_ENGINE_TIMEOUT)
         if not question:
             await evolution.send_text(
                 group_id,
@@ -1068,7 +1068,7 @@ async def handle_group_answer(
     user_id: str,
     user_name: str,
     answer: str,
-    session: Any,
+    session: GroupQuizSession,
     group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
@@ -1124,7 +1124,7 @@ async def handle_group_answer(
         scoring = QuizScoringEngine()
 
         # Buscar pergunta atual (silencioso - não mostra erro ao usuário)
-        question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+        question = await engine.get_question(session.quiz_id, session.current_question, timeout=QUIZ_ENGINE_TIMEOUT)
         if not question:
             logger.error(f"[SILENT] Falha ao carregar pergunta {session.current_question} do quiz {session.quiz_id}")
             return
@@ -1221,7 +1221,7 @@ async def handle_group_answer(
         # Buscar próxima pergunta (com retry silencioso)
         next_question = None
         for attempt in range(3):
-            next_question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+            next_question = await engine.get_question(session.quiz_id, session.current_question, timeout=QUIZ_ENGINE_TIMEOUT)
             if next_question:
                 break
             logger.warning(f"[RETRY] Tentativa {attempt + 1}/3 falhou ao carregar pergunta {session.current_question}")
@@ -1258,10 +1258,10 @@ async def handle_group_answer(
 
 
 async def generate_answer_explanation(
-    question: Any,
+    question: QuizQuestion,
     user_answer: str,
     is_correct: bool,
-    rag: Any,
+    rag: ClaudeRAG,
 ) -> str | None:
     """Gera explicação para a resposta usando RAG e LLM.
 
@@ -1351,7 +1351,7 @@ Responda de forma educativa, explicando o erro e a informação correta do regul
 async def handle_waiting_next_state(
     group_id: str,
     text_normalized: str,
-    session: Any,
+    session: GroupQuizSession,
     group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
@@ -1362,7 +1362,7 @@ async def handle_waiting_next_state(
 
 async def send_next_group_question(
     group_id: str,
-    session: Any,
+    session: GroupQuizSession,
     group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
@@ -1383,7 +1383,7 @@ async def send_next_group_question(
         rag = await app_state.get_rag()
         engine = QuizEngine(agentfs=agentfs, rag=rag)
 
-        prev_question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+        prev_question = await engine.get_question(session.quiz_id, session.current_question, timeout=QUIZ_ENGINE_TIMEOUT)
         if prev_question:
             current_state = session.get_current_question_state()
             if current_state:
@@ -1418,7 +1418,7 @@ async def send_next_group_question(
         # Buscar próxima pergunta (com retry silencioso)
         next_question = None
         for attempt in range(3):
-            next_question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+            next_question = await engine.get_question(session.quiz_id, session.current_question, timeout=QUIZ_ENGINE_TIMEOUT)
             if next_question:
                 break
             logger.warning(f"[RETRY] Tentativa {attempt + 1}/3 falhou ao carregar pergunta {session.current_question}")
@@ -1448,7 +1448,7 @@ async def handle_finished_state(
     user_id: str,
     user_name: str,
     text_normalized: str,
-    session: Any,
+    session: GroupQuizSession,
     group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
