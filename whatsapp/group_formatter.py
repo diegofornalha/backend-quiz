@@ -231,11 +231,13 @@ _Respondam com A, B, C ou D_"""
         if not ranking:
             return "📊 *Ranking*\n\nNenhum participante ainda."
 
-        lines = [
-            "🏆 *Ranking Atual*",
-            f"Pergunta {session.current_question}/{session.total_questions}",
-            "",
-        ]
+        lines = ["🏆 *Ranking Atual*"]
+
+        # Só mostrar progresso se o quiz já começou
+        if session.current_question > 0:
+            lines.append(f"Pergunta {session.current_question}/{session.total_questions}")
+
+        lines.append("")
 
         # Mostrar ranking
         limit = len(ranking) if show_full else min(3, len(ranking))
