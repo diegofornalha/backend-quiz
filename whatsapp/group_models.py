@@ -187,6 +187,25 @@ class GroupQuizSession(BaseModel):
         self.total_questions = new_total
         return added
 
+    def remove_participant_questions(self, num_leaving: int = 1) -> int:
+        """Remove perguntas quando participantes saem.
+
+        Args:
+            num_leaving: Número de participantes saindo
+
+        Returns:
+            Número de perguntas removidas (pode ser 0 se já passou do ponto)
+        """
+        reduction = self.QUESTIONS_PER_PARTICIPANT * num_leaving
+        # Mínimo de 3 perguntas (1 participante)
+        min_questions = self.QUESTIONS_PER_PARTICIPANT
+        # Não reduzir abaixo da pergunta atual
+        min_allowed = max(min_questions, self.current_question)
+        new_total = max(self.total_questions - reduction, min_allowed)
+        removed = self.total_questions - new_total
+        self.total_questions = new_total
+        return removed
+
     def calculate_initial_questions(self) -> int:
         """Calcula total de perguntas baseado nos participantes.
 

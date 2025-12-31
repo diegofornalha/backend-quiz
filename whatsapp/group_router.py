@@ -640,13 +640,27 @@ async def process_group_message(
         if text_normalized == GroupCommand.SAIR.value:
             display_name = _format_participant_name(user_id, user_name)
             if user_id in session.participants:
+                # Remover da ordem de turnos também
+                if user_id in session.turn_order:
+                    session.turn_order.remove(user_id)
+                # Se era a vez dele, avançar turno
+                if session.current_turn_user_id == user_id and session.turn_order:
+                    session.current_turn_user_id = session.turn_order[0]
+
                 del session.participants[user_id]
+
+                # Reduzir perguntas proporcionalmente
+                removed_questions = session.remove_participant_questions(1)
+
                 await group_manager.save_session(session)
-                await evolution.send_text(
-                    group_id,
-                    f"👋 *{display_name}* saiu do quiz.\n"
-                    f"👥 Participantes restantes: {len(session.participants)}"
-                )
+
+                # Mensagem com info sobre redução de perguntas
+                msg = f"👋 *{display_name}* saiu do quiz.\n"
+                msg += f"👥 Participantes restantes: {len(session.participants)}"
+                if removed_questions > 0:
+                    msg += f"\n📉 Quiz reduzido para {session.total_questions} perguntas"
+
+                await evolution.send_text(group_id, msg)
             else:
                 await evolution.send_text(group_id, f"ℹ️ *{display_name}*, você não está participando do quiz.")
             return
