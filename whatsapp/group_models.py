@@ -101,12 +101,17 @@ class GroupQuizSession(BaseModel):
     MAX_QUESTIONS: int = 30  # Limite máximo de segurança
 
     def get_or_create_participant(self, user_id: str, user_name: str) -> ParticipantScore:
-        """Obtém ou cria participante."""
+        """Obtém ou cria participante, atualizando nome se necessário."""
         if user_id not in self.participants:
             self.participants[user_id] = ParticipantScore(
                 user_id=user_id,
                 user_name=user_name,
             )
+        else:
+            # Atualizar nome se era temporário ("Novo (XXXX)")
+            participant = self.participants[user_id]
+            if participant.user_name.startswith("Novo (") and not user_name.startswith("Novo ("):
+                participant.user_name = user_name
         return self.participants[user_id]
 
     def get_current_question_state(self) -> QuestionState | None:
