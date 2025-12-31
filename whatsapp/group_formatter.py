@@ -7,13 +7,31 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from quiz.models.schemas import QuizQuestion
 
-    from .group_models import GroupQuizSession, ParticipantScore, QuestionState
+    from .group_models import GroupQuizSession, GroupQuizState, ParticipantScore, QuestionState
+
+from .group_models import GroupQuizState
 
 RANK_EMOJI = {
     1: "🥇",
     2: "🥈",
     3: "🥉",
 }
+
+
+def _format_participant_name(user_id: str, user_name: str) -> str:
+    """Formata nome do participante com últimos 4 dígitos do número.
+
+    Args:
+        user_id: ID do usuário (número WhatsApp)
+        user_name: Nome do usuário
+
+    Returns:
+        Nome formatado (ex: "Bianca (7291)")
+    """
+    clean_id = user_id.split("@")[0]
+    digits = "".join(c for c in clean_id if c.isdigit())
+    last_4 = digits[-4:] if len(digits) >= 4 else digits
+    return f"{user_name} ({last_4})" if last_4 else user_name
 
 
 class GroupMessageFormatter:
@@ -24,16 +42,17 @@ class GroupMessageFormatter:
         """Mensagem de boas-vindas ao grupo."""
         return """🎯 *Quiz Renda Extra Ton - Modo Grupo!*
 
-Bem-vindos ao quiz interativo! Vocês vão competir entre si respondendo 10 perguntas sobre o programa.
+Bem-vindos ao quiz interativo! Vocês vão competir entre si respondendo perguntas sobre o programa.
 
 📝 *Como Funciona:*
 • Todos veem a mesma pergunta
 • Cada pessoa responde individualmente (A/B/C/D)
 • Ganha quem fizer mais pontos
 • Ranking atualizado em tempo real
+• 🎁 Novos participantes = mais perguntas!
 
 🏆 *Para Começar:*
-Digite *INICIAR* para iniciar o quiz!
+Digite *INICIAR* para criar o lobby!
 
 💡 *Comandos Úteis:*
 • *RANKING* - Ver placar atual
@@ -64,31 +83,46 @@ _Respondam com A, B, C ou D_"""
         question: QuizQuestion,
         question_num: int,
         already_answered: list[str] | None = None,
+        total_questions: int = 10,
+        current_turn_name: str | None = None,
     ) -> str:
         """Formata pergunta para o grupo.
 
         Args:
             question: Objeto QuizQuestion
-            question_num: Número da pergunta (1-10)
+            question_num: Número da pergunta (1-N)
             already_answered: Lista de nomes que já responderam
+            total_questions: Total de perguntas no quiz
+            current_turn_name: Nome de quem é a vez (sistema de turnos)
 
         Returns:
             Mensagem formatada
         """
         lines = [
-            f"❓ *Pergunta {question_num}/10*",
+            f"❓ *Pergunta {question_num}/{total_questions}*",
             f"💎 *Vale {question.points} pontos*",
+        ]
+
+        # Mostrar de quem é a vez (sistema de turnos)
+        if current_turn_name:
+            lines.append("")
+            lines.append(f"🎯 *Vez de:* {current_turn_name}")
+
+        lines.extend([
             "",
             f"*{question.question}*",
             "",
-        ]
+        ])
 
         # Adicionar opções
         for opt in question.options:
             lines.append(f"*{opt.label})* {opt.text}")
 
         lines.append("")
-        lines.append("📱 *Responda com:* A, B, C ou D")
+        if current_turn_name:
+            lines.append(f"📱 *{current_turn_name}, responda:* A, B, C ou D")
+        else:
+            lines.append("📱 *Responda com:* A, B, C ou D")
 
         # Mostrar quem já respondeu
         if already_answered:
@@ -193,7 +227,7 @@ _Respondam com A, B, C ou D_"""
 
         lines = [
             "🏆 *Ranking Atual*",
-            f"Pergunta {session.current_question}/10",
+            f"Pergunta {session.current_question}/{session.total_questions}",
             "",
         ]
 
@@ -202,8 +236,9 @@ _Respondam com A, B, C ou D_"""
         for i, participant in enumerate(ranking[:limit], 1):
             emoji = RANK_EMOJI.get(i, f"{i}º")
             percentage = participant.percentage
+            display_name = _format_participant_name(participant.user_id, participant.user_name)
             lines.append(
-                f"{emoji} *{participant.user_name}*\n"
+                f"{emoji} *{display_name}*\n"
                 f"    🎯 {participant.total_score} pts | "
                 f"✅ {participant.correct_answers}/{participant.total_answers} "
                 f"({percentage:.0f}%)"
@@ -238,10 +273,11 @@ _Respondam com A, B, C ou D_"""
         for i, participant in enumerate(ranking[:3], 1):
             emoji = RANK_EMOJI.get(i, "")
             percentage = participant.percentage
+            display_name = _format_participant_name(participant.user_id, participant.user_name)
             lines.append(
-                f"{emoji} *{participant.user_name}*\n"
+                f"{emoji} *{display_name}*\n"
                 f"    🎯 {participant.total_score} pontos\n"
-                f"    ✅ {participant.correct_answers}/10 corretas ({percentage:.0f}%)\n"
+                f"    ✅ {participant.correct_answers}/{session.total_questions} corretas ({percentage:.0f}%)\n"
             )
 
         # Estatísticas gerais
@@ -285,7 +321,7 @@ _Respondam com A, B, C ou D_"""
         lines = [
             "📊 *Status do Quiz*",
             "",
-            f"📝 Pergunta: {session.current_question}/10",
+            f"📝 Pergunta: {session.current_question}/{session.total_questions}",
             f"👥 Participantes: {len(session.participants)}",
             "",
         ]
@@ -296,7 +332,8 @@ _Respondam com A, B, C ou D_"""
             lines.append("🏆 *Top 3 Atual:*")
             for i, p in enumerate(top3, 1):
                 emoji = RANK_EMOJI.get(i, f"{i}º")
-                lines.append(f"{emoji} {p.user_name} - {p.total_score} pts")
+                display_name = _format_participant_name(p.user_id, p.user_name)
+                lines.append(f"{emoji} {display_name} - {p.total_score} pts")
 
         return "\n".join(lines)
 
@@ -326,6 +363,7 @@ Digite *INICIAR* para começar um novo quiz!"""
 
 *Durante o Quiz:*
 • *A, B, C, D* - Responder pergunta
+• *DICA* - Receber dica do regulamento
 • *RANKING* - Ver placar atual
 • *STATUS* - Ver progresso
 • *PROXIMA* - Avançar pergunta (após todos responderem)
@@ -382,3 +420,98 @@ Digite *PROXIMA* para continuar para a próxima pergunta!"""
 {cancelled_by} cancelou o quiz.
 
 Digite *INICIAR* para começar um novo quiz!"""
+
+    @staticmethod
+    def format_lobby_created(created_by: str, session: GroupQuizSession) -> str:
+        """Lobby criado - aguardando participantes.
+
+        Args:
+            created_by: Nome de quem criou o lobby
+            session: Sessão do grupo
+
+        Returns:
+            Mensagem formatada
+        """
+        # Usar get_participant_display para mostrar nome + últimos 4 dígitos
+        participant_displays = [
+            session.get_participant_display(user_id) or p.user_name
+            for user_id, p in session.participants.items()
+        ]
+
+        # Formatar lista de participantes
+        if participant_displays:
+            participants_text = '\n'.join([f"* {p}" for p in participant_displays])
+        else:
+            participants_text = "* Nenhum ainda"
+
+        return f"""🎮 *Lobby do Quiz Criado!*
+
+━━━━━━━━━━━━━━━━━━━━
+
+👥 *Participantes ({len(participant_displays)}):*
+{participants_text}
+
+━━━━━━━━━━━━━━━━━━━━
+
+📝 *Como participar:*
+Digite *ENTRAR* para entrar no quiz
+
+━━━━━━━━━━━━━━━━━━━━"""
+
+    @staticmethod
+    def format_lobby_status(session: GroupQuizSession) -> str:
+        """Status do lobby.
+
+        Args:
+            session: Sessão do grupo
+
+        Returns:
+            Mensagem formatada
+        """
+        # Usar get_participant_display para mostrar nome + últimos 4 dígitos
+        participant_displays = [
+            session.get_participant_display(user_id) or p.user_name
+            for user_id, p in session.participants.items()
+        ]
+
+        return f"""🎮 *Lobby do Quiz*
+
+👥 *Participantes ({len(participant_displays)}):*
+{chr(10).join(f'• {name}' for name in participant_displays) if participant_displays else '• Nenhum ainda'}
+
+━━━━━━━━━━━━━━━━━━━━
+
+📝 Digite *ENTRAR* para participar
+🚀 Digite *COMECAR* quando todos estiverem prontos
+❌ Digite *PARAR* para cancelar
+
+━━━━━━━━━━━━━━━━━━━━
+
+📢 *Convide mais pessoas:*
+https://chat.whatsapp.com/BKrn8SOMBYG8v9LWtFOTJk"""
+
+    @staticmethod
+    def format_quiz_started_with_participants(session: GroupQuizSession) -> str:
+        """Quiz iniciado com lista de participantes.
+
+        Args:
+            session: Sessão do grupo
+
+        Returns:
+            Mensagem formatada
+        """
+        # Usar get_participant_display para mostrar nome + últimos 4 dígitos
+        participant_displays = [
+            session.get_participant_display(user_id) or p.user_name
+            for user_id, p in session.participants.items()
+        ]
+
+        return f"""🎯 *Quiz Iniciado!*
+
+📊 *{session.total_questions} perguntas* sobre Renda Extra Ton
+🎁 _Novos participantes = +3 perguntas extras!_
+
+👥 *Participantes ({len(participant_displays)}):*
+{chr(10).join(f'• {name}' for name in participant_displays)}
+
+_Respondam com A, B, C ou D_"""

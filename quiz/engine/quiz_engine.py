@@ -49,8 +49,8 @@ class QuizEngine:
         >>> question_2 = await engine.get_question(quiz_id, 2)
     """
 
-    MAX_RETRIES = 5  # Retries para perguntas duplicadas
-    TOTAL_QUESTIONS = 10
+    MAX_RETRIES = 1  # DESABILITADO: aceitar primeira pergunta (keywords muito amplas causam falsos positivos)
+    TOTAL_QUESTIONS = 3  # Reduzido para testes mais rápidos (~10s de geração)
 
     # Cache em memória GLOBAL (compartilhado entre instâncias)
     _memory_cache: dict[str, QuizState] = {}
@@ -298,11 +298,12 @@ class QuizEngine:
                 )
 
                 if not is_valid:
-                    logger.warning(
-                        f"[Quiz {state.quiz_id}] P{index} duplicata "
-                        f"(tópico: {topic}), retry {attempt + 1}/{self.MAX_RETRIES}"
+                    # RETRY DESABILITADO: aceitar pergunta mesmo com tópico similar
+                    logger.info(
+                        f"[Quiz {state.quiz_id}] P{index} tópico similar detectado "
+                        f"('{topic}'), mas aceitando (retry desabilitado)"
                     )
-                    continue
+                    # NÃO fazer continue - aceitar a pergunta
 
                 # Criar pergunta
                 question = self._create_question_from_data(index, q_data, difficulty)
@@ -314,8 +315,8 @@ class QuizEngine:
                     f"(retry {attempt + 1}): {e}"
                 )
 
-        # Fallback após max retries
-        logger.error(f"[Quiz {state.quiz_id}] P{index}: max retries, usando fallback")
+        # Fallback após falha (não deveria chegar aqui com MAX_RETRIES=1)
+        logger.error(f"[Quiz {state.quiz_id}] P{index}: ERRO CRÍTICO na geração, usando fallback")
         return self._create_fallback_question(index, difficulty)
 
     def _extract_json(self, text: str) -> dict:
@@ -436,6 +437,18 @@ class QuizEngine:
         """
         start = asyncio.get_event_loop().time()
 
+        # Primeira verificação: tentar carregar do AgentFS se não estiver em memória
+        state = self._get_state(quiz_id)
+        if state is None and self.store:
+            try:
+                stored_state = await self.store.load_state(quiz_id)
+                if stored_state:
+                    logger.info(f"[Quiz {quiz_id}] Recuperado do AgentFS (tinha {len(stored_state.questions)} perguntas)")
+                    self._set_state(stored_state)
+                    state = stored_state
+            except Exception as e:
+                logger.warning(f"[Quiz {quiz_id}] Erro ao recuperar do AgentFS: {e}")
+
         while True:
             # Buscar do cache em memória (primário)
             state = self._get_state(quiz_id)
@@ -466,6 +479,18 @@ class QuizEngine:
             Dict com status do quiz
         """
         state = self._get_state(quiz_id)
+
+        # Tentar recuperar do AgentFS se não estiver em memória
+        if state is None and self.store:
+            try:
+                stored_state = await self.store.load_state(quiz_id)
+                if stored_state:
+                    logger.info(f"[Quiz {quiz_id}] Recuperado do AgentFS para status")
+                    self._set_state(stored_state)
+                    state = stored_state
+            except Exception as e:
+                logger.warning(f"[Quiz {quiz_id}] Erro ao recuperar status do AgentFS: {e}")
+
         if state is None:
             return {
                 "quiz_id": quiz_id,
@@ -477,7 +502,7 @@ class QuizEngine:
             "quiz_id": quiz_id,
             "found": True,
             "generated_count": state.generated_count,
-            "total_questions": 10,
+            "total_questions": self.TOTAL_QUESTIONS,
             "complete": state.complete,
             "error": state.error,
             "max_score": state.max_score,

@@ -184,6 +184,52 @@ class EvolutionAPIClient:
             logger.error(f"Erro ao verificar status: {e}")
             raise
 
+    async def send_presence(
+        self,
+        number: str,
+        presence: str = "composing",
+        delay: int = 2000,
+    ) -> dict[str, Any]:
+        """Envia presença (typing, recording, etc).
+
+        Args:
+            number: Número/grupo destinatário
+            presence: Tipo de presença ("composing", "recording", "available", "paused")
+            delay: Duração da presença em ms
+
+        Returns:
+            Resposta da API
+        """
+        url = f"{self.base_url}/chat/sendPresence/{self.instance_name}"
+        payload = {
+            "number": number,
+            "delay": delay,
+            "presence": presence,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(url, json=payload, headers=self.headers)
+                response.raise_for_status()
+                result = response.json()
+                logger.debug(f"Presença '{presence}' enviada para {number}")
+                return result
+        except httpx.HTTPError as e:
+            logger.warning(f"Erro ao enviar presença (não crítico): {e}")
+            return {}
+
+    async def send_typing(self, number: str, duration: int = 2000) -> dict[str, Any]:
+        """Simula digitação (atalho para send_presence).
+
+        Args:
+            number: Número/grupo destinatário
+            duration: Duração em ms
+
+        Returns:
+            Resposta da API
+        """
+        return await self.send_presence(number, "composing", duration)
+
     async def set_webhook(self, webhook_url: str, events: list[str] | None = None) -> dict[str, Any]:
         """Configura webhook para receber mensagens.
 

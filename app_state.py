@@ -159,6 +159,54 @@ async def get_agentfs() -> "AgentFS":
     return agentfs
 
 
+# =============================================================================
+# GROUP STATE AGENTFS (sessão dedicada para dados de grupos)
+# =============================================================================
+
+_group_agentfs: "AgentFS | None" = None
+GROUP_SESSION_ID = "whatsapp-groups-state"  # ID fixo para persistência de grupos
+
+
+async def get_group_agentfs() -> "AgentFS":
+    """Get AgentFS instance dedicated for group state management.
+
+    Uses a fixed session ID to ensure group data persists across restarts.
+    """
+    global _group_agentfs
+
+    if _group_agentfs is None:
+        from agentfs_sdk import AgentFS, AgentFSOptions
+
+        _group_agentfs = await AgentFS.open(AgentFSOptions(id=GROUP_SESSION_ID))
+        print(f"[INFO] Group AgentFS initialized with session: {GROUP_SESSION_ID}")
+
+    return _group_agentfs
+
+
+# =============================================================================
+# QUIZ STATE AGENTFS (sessão dedicada para dados de quizzes)
+# =============================================================================
+
+_quiz_agentfs: "AgentFS | None" = None
+QUIZ_SESSION_ID = "quiz-state"  # ID fixo para persistência de quizzes
+
+
+async def get_quiz_agentfs() -> "AgentFS":
+    """Get AgentFS instance dedicated for quiz state management.
+
+    Uses a fixed session ID to ensure quiz data persists across restarts.
+    """
+    global _quiz_agentfs
+
+    if _quiz_agentfs is None:
+        from agentfs_sdk import AgentFS, AgentFSOptions
+
+        _quiz_agentfs = await AgentFS.open(AgentFSOptions(id=QUIZ_SESSION_ID))
+        print(f"[INFO] Quiz AgentFS initialized with session: {QUIZ_SESSION_ID}")
+
+    return _quiz_agentfs
+
+
 async def clear_session():
     """Clear current session WITHOUT creating a new one."""
     global llm_provider, agentfs, current_session_id
@@ -220,15 +268,15 @@ def get_current_session_id() -> str | None:
 
 
 async def get_rag():
-    """Get RAG instance with fixed ID for persistent documents.
+    """Get RAG SearchEngine instance.
 
-    Note: RAG functionality is preserved but uses local search engine
-    instead of A2A RAG SDK.
+    Returns the SearchEngine which uses SQLite with sqlite-vec
+    for semantic search over ingested documents.
     """
-    from agentfs_sdk import AgentFS, AgentFSOptions
+    from a2a_rag_sdk.search import SearchEngine
 
-    # Use fixed ID so documents persist across server restarts
-    return await AgentFS.open(AgentFSOptions(id="rag-knowledge-base"))
+    # SearchEngine uses the local .agentfs/rag.db database
+    return SearchEngine()
 
 
 # =============================================================================

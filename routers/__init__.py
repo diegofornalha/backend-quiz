@@ -1,4 +1,4 @@
-"""Routers module for Chat Simples."""
+"""Routers module for Agent Quiz."""
 
 from .artifacts import router as artifacts_router
 from .audit import router as audit_router

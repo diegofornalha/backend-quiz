@@ -788,16 +788,14 @@ async def generate_remaining_questions(quiz_id: str) -> None:
             topic = extract_topic(question_text)
             return topic in used_topics
 
-        # 4. Gerar perguntas 2-10 com retry para duplicatas
-        MAX_RETRIES = 5  # Aumentado para dar mais chances de encontrar tópico único
+        # 4. Gerar perguntas 2-10 (detecção de duplicatas DESABILITADA temporariamente)
+        # TODO: Melhorar lógica de detecção de duplicatas - keywords muito amplas causam falsos positivos
+        MAX_RETRIES = 1  # Desabilitado: aceitar primeira pergunta gerada
 
         for i, difficulty in enumerate(difficulties, start=2):
-            retry_count = 0
-            question_generated = False
-
-            while not question_generated and retry_count < MAX_RETRIES:
-                try:
-                    # Formatar tópicos anteriores de forma clara
+            # RETRY LOOP REMOVIDO - gera apenas 1 vez por pergunta
+            try:
+                    # Formatar tópicos anteriores de forma clara (informativo apenas)
                     topics_str = "\n".join([f"  🚫 {t}" for t in previous_topics])
 
                     prompt = SINGLE_QUESTION_PROMPT.format(
@@ -819,16 +817,15 @@ async def generate_remaining_questions(quiz_id: str) -> None:
 
                     q_data = json.loads(json_match.strip())
 
-                    # VALIDAÇÃO DE DUPLICATA - Verificar ANTES de criar a pergunta
+                    # VALIDAÇÃO DE DUPLICATA DESABILITADA (keywords muito amplas causam falsos positivos)
                     question_text = q_data["question"]
+                    # Apenas log, não bloquear
+                    detected_topic = extract_topic(question_text)
                     if is_duplicate_topic(question_text, previous_topics):
-                        detected_topic = extract_topic(question_text)
-                        logger.warning(
-                            f"[Quiz {quiz_id}] P{i} DUPLICATA DETECTADA! "
-                            f"Tópico '{detected_topic}' já usado. Retry {retry_count + 1}/{MAX_RETRIES}"
+                        logger.info(
+                            f"[Quiz {quiz_id}] P{i} tópico similar a anterior: '{detected_topic}' (aceitando mesmo assim)"
                         )
-                        retry_count += 1
-                        continue  # Tentar novamente
+                    # Não fazer retry, continuar com a pergunta
 
                     # Normalizar dificuldade
                     raw_difficulty = q_data.get("difficulty", difficulty).lower()
@@ -861,16 +858,11 @@ async def generate_remaining_questions(quiz_id: str) -> None:
                         previous_topics.append(topic)
                     logger.info(f"[Quiz {quiz_id}] P{i} OK - Tópico: {topic}")
 
-                    question_generated = True
-                    logger.info(f"[Quiz {quiz_id}] Pergunta {i} gerada com sucesso")
+                    logger.info(f"[Quiz {quiz_id}] Pergunta {i} gerada (sem retry)")
 
-                except Exception as e:
-                    logger.error(f"[Quiz {quiz_id}] Erro ao gerar pergunta {i} (retry {retry_count}): {e}")
-                    retry_count += 1
-
-            # Se esgotou retries sem sucesso, criar fallback
-            if not question_generated:
-                logger.error(f"[Quiz {quiz_id}] Pergunta {i}: máximo de retries atingido, usando fallback")
+            except Exception as e:
+                # Se falhar, criar fallback e continuar
+                logger.error(f"[Quiz {quiz_id}] Erro ao gerar P{i}: {e} - usando fallback")
                 _quiz_store[quiz_id]["questions"][i] = QuizQuestion(
                     id=i,
                     question=f"Pergunta {i} sobre o programa Renda Extra Ton",
@@ -896,6 +888,31 @@ async def generate_remaining_questions(quiz_id: str) -> None:
             q.points for q in _quiz_store[quiz_id]["questions"].values()
         )
         logger.info(f"[Quiz {quiz_id}] Geração completa! {len(_quiz_store[quiz_id]['questions'])} perguntas")
+
+        # Salvar no AgentFS para persistência
+        try:
+            from quiz.models.state import QuizState
+            from quiz.storage.quiz_store import QuizStore
+
+            print(f"[SAVE] Quiz {quiz_id}: Iniciando salvamento no AgentFS...")
+            agentfs = await app_state.get_quiz_agentfs()
+            if agentfs:
+                store = QuizStore(agentfs)
+                state = QuizState(
+                    quiz_id=quiz_id,
+                    questions=_quiz_store[quiz_id]["questions"],
+                    generated_count=_quiz_store[quiz_id]["generated_count"],
+                    complete=True,
+                    max_score=_quiz_store[quiz_id]["max_score"],
+                )
+                await store.save_state(state)
+                print(f"[SAVE] Quiz {quiz_id}: SALVO no AgentFS com sessão fixa!")
+                logger.info(f"[Quiz {quiz_id}] Salvo no AgentFS com sessão fixa")
+            else:
+                print(f"[SAVE] Quiz {quiz_id}: AgentFS não disponível!")
+        except Exception as save_error:
+            print(f"[SAVE] Quiz {quiz_id}: ERRO ao salvar: {save_error}")
+            logger.warning(f"[Quiz {quiz_id}] Erro ao salvar no AgentFS: {save_error}")
 
     except Exception as e:
         logger.error(f"[Quiz {quiz_id}] Erro fatal na geração: {e}")
@@ -1077,6 +1094,27 @@ async def get_question(
         quiz_id: ID do quiz retornado por /start
         index: Número da pergunta (1-10)
     """
+    # Tentar recuperar do AgentFS se não estiver em memória
+    if quiz_id not in _quiz_store:
+        try:
+            agentfs = await app_state.get_quiz_agentfs()
+            if agentfs:
+                from quiz.storage.quiz_store import QuizStore
+                store = QuizStore(agentfs)
+                stored_state = await store.load_state(quiz_id)
+                if stored_state:
+                    # Recuperar para _quiz_store
+                    _quiz_store[quiz_id] = {
+                        "questions": stored_state.questions,
+                        "generated_count": stored_state.generated_count,
+                        "complete": stored_state.complete,
+                        "error": stored_state.error,
+                        "max_score": stored_state.max_score,
+                    }
+                    logger.info(f"[Quiz {quiz_id}] Recuperado do AgentFS com {len(stored_state.questions)} perguntas")
+        except Exception as e:
+            logger.warning(f"[Quiz {quiz_id}] Erro ao tentar recuperar do AgentFS: {e}")
+
     if quiz_id not in _quiz_store:
         raise HTTPException(status_code=404, detail=f"Quiz {quiz_id} não encontrado")
 
@@ -1093,8 +1131,9 @@ async def get_question(
     if index in quiz_data["questions"]:
         return quiz_data["questions"][index]
 
-    # Polling: aguardar a pergunta ser gerada (max 30 tentativas x 1s = 30s)
-    for attempt in range(30):
+    # Polling: aguardar a pergunta ser gerada (max 150 tentativas x 1s = 150s)
+    # Necessário porque perguntas são geradas sequencialmente (~10s cada, 9 perguntas = 90s+)
+    for attempt in range(150):
         await asyncio.sleep(1)
 
         # Verificar novamente
@@ -1122,6 +1161,26 @@ async def get_quiz_status(
 
     Útil para verificar quantas perguntas já foram geradas.
     """
+    # Tentar recuperar do AgentFS se não estiver em memória
+    if quiz_id not in _quiz_store:
+        try:
+            agentfs = await app_state.get_quiz_agentfs()
+            if agentfs:
+                from quiz.storage.quiz_store import QuizStore
+                store = QuizStore(agentfs)
+                stored_state = await store.load_state(quiz_id)
+                if stored_state:
+                    _quiz_store[quiz_id] = {
+                        "questions": stored_state.questions,
+                        "generated_count": stored_state.generated_count,
+                        "complete": stored_state.complete,
+                        "error": stored_state.error,
+                        "max_score": stored_state.max_score,
+                    }
+                    logger.info(f"[Quiz {quiz_id}] Recuperado do AgentFS para status")
+        except Exception as e:
+            logger.warning(f"[Quiz {quiz_id}] Erro ao tentar recuperar status do AgentFS: {e}")
+
     if quiz_id not in _quiz_store:
         raise HTTPException(status_code=404, detail=f"Quiz {quiz_id} não encontrado")
 

@@ -1,5 +1,5 @@
 """
-Chat Simples Server - Powered by A2A RAG SDK + LiteLLM
+Agent Quiz Server - Powered by A2A RAG SDK + LiteLLM
 
 Production-ready FastAPI server with:
 - A2A RAG SDK integration
@@ -54,7 +54,7 @@ from whatsapp.group_router import router as whatsapp_group_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage app lifecycle."""
-    logger.info("Starting Chat Simples...")
+    logger.info("Starting Agent Quiz...")
     yield
     # Cleanup watcher before app_state
     try:
@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="A2A RAG SDK API",
     description="""
-## Chat Simples - Backend API
+## Agent Quiz - Backend API
 
 API REST para chat com **RAG (Retrieval-Augmented Generation)** usando Claude.
 
@@ -152,11 +152,7 @@ async def rag_exception_handler(request: Request, exc: RAGException) -> JSONResp
     Converte RAGException em respostas HTTP apropriadas com JSON estruturado.
     """
     logger.error(
-        "RAG exception occurred",
-        error_type=exc.code,
-        error_message=exc.message,
-        http_status=exc.http_status,
-        path=str(request.url.path),
+        f"RAG exception occurred: {exc.code} - {exc.message} (HTTP {exc.http_status}) at {request.url.path}"
     )
     return JSONResponse(
         status_code=exc.http_status,
@@ -171,10 +167,7 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     Garante que erros não capturados retornem JSON estruturado.
     """
     logger.error(
-        "Unhandled exception",
-        error_type=type(exc).__name__,
-        error_message=str(exc),
-        path=str(request.url.path),
+        f"Unhandled exception: {type(exc).__name__} - {str(exc)} at {request.url.path}",
         exc_info=True,
     )
     return JSONResponse(
@@ -239,7 +232,7 @@ async def root():
         "status": "ok",
         "session_active": app_state.client is not None,
         "session_id": app_state.current_session_id,
-        "message": "Chat Simples v3 - A2A RAG SDK",
+        "message": "Agent Quiz - A2A RAG SDK",
         "auth_enabled": is_auth_enabled(),
     }
 

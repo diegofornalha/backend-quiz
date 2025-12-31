@@ -29,7 +29,7 @@ classifiers = [
 dependencies = [
     # AgentFS - base para filesystem, KV store e tool tracking
     "agentfs-sdk>=0.4.0rc2",
-    "pyturso>=0.4.0",
+    "pyturso>=0.3.0",
 
     # LiteLLM - Provider agnóstico para LLMs (Gemini, Claude, etc)
     "litellm>=1.40.0",

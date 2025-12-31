@@ -14,9 +14,10 @@ from quiz.engine.quiz_engine import QuizEngine
 from quiz.engine.scoring_engine import QuizScoringEngine
 
 from .evolution_client import EvolutionAPIClient
-from .group_formatter import GroupMessageFormatter
-from .group_manager import GroupStateManager
+from .group_formatter import GroupMessageFormatter, _format_participant_name
+from .group_manager_kv import GroupStateManagerKV
 from .group_models import GroupCommand, GroupQuizState
+from .quiz_logger import get_quiz_logger, QuizLogger, LogCategory
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +27,20 @@ router = APIRouter(prefix="/whatsapp/group", tags=["WhatsApp Group"])
 # SINGLETONS
 # =============================================================================
 
-_group_manager: GroupStateManager | None = None
+_group_manager: GroupStateManagerKV | None = None
 _evolution_client: EvolutionAPIClient | None = None
 _formatter = GroupMessageFormatter()
 
 
-def get_group_manager() -> GroupStateManager:
-    """Dependency: Gerenciador de grupos."""
+async def get_group_manager() -> GroupStateManagerKV:
+    """Dependency: Gerenciador de grupos usando AgentFS KVStore.
+
+    Usa uma sessão AgentFS dedicada (ID fixo) para persistência de grupos.
+    """
     global _group_manager
     if _group_manager is None:
-        _group_manager = GroupStateManager()
+        agentfs = await app_state.get_group_agentfs()
+        _group_manager = GroupStateManagerKV(agentfs)
     return _group_manager
 
 
@@ -61,7 +66,7 @@ def get_evolution_client() -> EvolutionAPIClient:
 
 async def get_quiz_engine() -> QuizEngine:
     """Dependency: Quiz engine."""
-    agentfs = await app_state.get_agentfs()
+    agentfs = await app_state.get_quiz_agentfs()
     rag = await app_state.get_rag()
     return QuizEngine(agentfs=agentfs, rag=rag)
 
@@ -80,7 +85,7 @@ def get_scoring_engine() -> QuizScoringEngine:
 async def group_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
-    group_manager: GroupStateManager = Depends(get_group_manager),
+    group_manager: GroupStateManagerKV = Depends(get_group_manager),
     evolution: EvolutionAPIClient = Depends(get_evolution_client),
 ):
     """Webhook para receber mensagens de grupos WhatsApp.
@@ -90,13 +95,17 @@ async def group_webhook(
     """
     try:
         body = await request.json()
-        logger.debug(f"Webhook recebido: {body}")
+        print(f"[WEBHOOK] Recebido: {body}")  # Debug temporário
 
-        event = body.get("event")
+        event = body.get("event", "")
         data = body.get("data", {})
 
-        if event != "messages.upsert":
-            return {"status": "ignored", "reason": "event not messages.upsert"}
+        # Log para debug
+        print(f"[WEBHOOK] event={event}, keys={list(body.keys())}")
+
+        # Evolution API pode enviar como "messages.upsert" ou "MESSAGES_UPSERT"
+        if event.lower() != "messages.upsert" and event != "MESSAGES_UPSERT":
+            return {"status": "ignored", "reason": f"event {event} not messages.upsert"}
 
         message_data = data.get("message", {})
         key = data.get("key", {})
@@ -119,19 +128,23 @@ async def group_webhook(
 
         # É mensagem de grupo - verificar whitelist
         group_id = remote_jid
-        if not group_manager.is_group_allowed(group_id):
+        if not await group_manager.is_group_allowed(group_id):
             # Grupo não autorizado - ignorar silenciosamente
             logger.debug(f"Grupo não autorizado (ignorando): {group_id}")
             return {"status": "ignored", "reason": "group not whitelisted"}
 
         # Extrair texto da mensagem
-        message_type = message_data.get("messageType")
+        # messageType pode estar em data ou em data.message
+        message_type = data.get("messageType") or message_data.get("messageType")
         text = ""
 
         if message_type == "conversation":
-            text = message_data.get("conversation", "")
+            # Texto pode estar em data.message.conversation ou direto
+            text = message_data.get("conversation", "") or data.get("message", {}).get("conversation", "")
         elif message_type == "extendedTextMessage":
             text = message_data.get("extendedTextMessage", {}).get("text", "")
+
+        print(f"[WEBHOOK] group={remote_jid}, type={message_type}, text={text[:50] if text else 'EMPTY'}")
 
         if not text:
             return {"status": "ignored", "reason": "no text in message"}
@@ -172,7 +185,7 @@ async def process_group_message(
     user_id: str,
     user_name: str,
     text: str,
-    group_manager: GroupStateManager,
+    group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
     """Processa mensagem do grupo.
@@ -182,25 +195,85 @@ async def process_group_message(
         user_id: ID do usuário que enviou
         user_name: Nome do usuário
         text: Texto da mensagem
-        group_manager: Gerenciador de grupos
+        group_manager: Gerenciador de grupos (KVStore)
         evolution: Cliente Evolution
     """
     try:
         text_upper = text.upper().strip()
 
-        # Buscar sessão do grupo
-        session = group_manager.get_session(group_id)
-
-        logger.info(
-            f"Mensagem em {group_id} de {user_name}: '{text}' (state: {session.state})"
+        # Normalizar acentos para comandos
+        # COMEÇAR -> COMECAR, PRÓXIMA -> PROXIMA, etc.
+        text_normalized = (
+            text_upper
+            .replace("Ç", "C")
+            .replace("Á", "A")
+            .replace("É", "E")
+            .replace("Í", "I")
+            .replace("Ó", "O")
+            .replace("Ú", "U")
+            .replace("Ã", "A")
+            .replace("Õ", "O")
         )
 
-        # Comandos globais
-        if text_upper == GroupCommand.AJUDA.value:
+        # Buscar sessão do grupo
+        session = await group_manager.get_session(group_id)
+
+        print(f"[PROCESS] Mensagem de {user_name} ({user_id}): '{text}' -> '{text_normalized}' (state: {session.state})")
+
+        # Número do bot (Evolution) - NUNCA deve ser participante
+        BOT_NUMBER = "5521936182339"
+        is_bot = user_id == BOT_NUMBER or user_id.startswith(BOT_NUMBER)
+
+        if is_bot:
+            # Ignorar mensagens do próprio bot
+            print(f"[BOT] Ignorando mensagem do próprio bot")
+            return
+
+        # === CHECK-IN AUTOMÁTICO (apenas durante quiz ACTIVE) ===
+        # No lobby (WAITING_START), participantes devem digitar ENTRAR explicitamente
+        is_admin = session.started_by == user_id
+        if session.state == GroupQuizState.ACTIVE:
+            is_new_participant = user_id not in session.participants
+            if is_new_participant and user_id and not user_id.endswith("@g.us") and not is_admin:
+                # Registrar participante que entrou durante o quiz
+                session.get_or_create_participant(user_id, user_name)
+
+                # Adicionar à ordem de turnos
+                session.add_participant_to_turn_order(user_id)
+
+                # Adicionar perguntas bônus para dar chance ao novo participante
+                added_questions = session.add_bonus_questions(1)
+                await group_manager.save_session(session)
+
+                # Mensagem de boas-vindas com info sobre perguntas extras e turno atual
+                current_turn_name = session.get_current_turn_display()
+                turn_info = f"\n🎯 *Turno atual:* {current_turn_name}" if current_turn_name else ""
+                display_name = _format_participant_name(user_id, user_name)
+
+                if added_questions > 0:
+                    welcome_msg = (
+                        f"🎉 *{display_name}* entrou no quiz!\n\n"
+                        f"🎁 *+{added_questions} perguntas extras* adicionadas!\n"
+                        f"📊 Total agora: *{session.total_questions} perguntas*"
+                        f"{turn_info}\n\n"
+                        f"_Aguarde sua vez! 🧠✨_"
+                    )
+                else:
+                    welcome_msg = (
+                        f"🎉 *{display_name}* entrou no quiz!\n"
+                        f"📊 Já estamos no máximo de {session.total_questions} perguntas."
+                        f"{turn_info}\n\n"
+                        f"_Aguarde sua vez! 🧠✨_"
+                    )
+                await evolution.send_text(group_id, welcome_msg)
+                print(f"[CHECK-IN] Novo participante: {user_name} ({user_id}) | +{added_questions} perguntas")
+
+        # Comandos globais (usando text_normalized para aceitar acentos)
+        if text_normalized == GroupCommand.AJUDA.value:
             await evolution.send_text(group_id, _formatter.format_help())
             return
 
-        if text_upper == GroupCommand.REGULAMENTO.value:
+        if text_normalized == GroupCommand.REGULAMENTO.value:
             await evolution.send_text(
                 group_id,
                 "📋 *Regulamento Oficial*\n\n"
@@ -208,26 +281,61 @@ async def process_group_message(
             )
             return
 
-        if text_upper == GroupCommand.STATUS.value:
+        if text_normalized == GroupCommand.STATUS.value:
             await evolution.send_text(group_id, _formatter.format_status(session))
             return
 
-        if text_upper == GroupCommand.RANKING.value:
+        if text_normalized == GroupCommand.RANKING.value:
             await evolution.send_text(group_id, _formatter.format_ranking(session, show_full=True))
             return
 
-        # Comandos baseados em estado
+        # Comando SAIR - participante sai do quiz
+        if text_normalized == GroupCommand.SAIR.value:
+            display_name = _format_participant_name(user_id, user_name)
+            if user_id in session.participants:
+                del session.participants[user_id]
+                await group_manager.save_session(session)
+                await evolution.send_text(
+                    group_id,
+                    f"👋 *{display_name}* saiu do quiz.\n"
+                    f"👥 Participantes restantes: {len(session.participants)}"
+                )
+            else:
+                await evolution.send_text(group_id, f"ℹ️ *{display_name}*, você não está participando do quiz.")
+            return
+
+        # Comando DUVIDA - consulta o regulamento com pergunta livre
+        if text_normalized.startswith(GroupCommand.DUVIDA.value):
+            # Extrair a pergunta após "DUVIDA "
+            question_text = text[len(GroupCommand.DUVIDA.value):].strip()
+            if not question_text:
+                await evolution.send_text(
+                    group_id,
+                    "❓ *Como usar o comando DUVIDA:*\n\n"
+                    "Digite *DUVIDA* seguido da sua pergunta.\n\n"
+                    "Exemplo:\n"
+                    "_DUVIDA como funciona o cashback?_\n"
+                    "_DUVIDA qual o prazo de pagamento?_"
+                )
+            else:
+                await handle_doubt_request(group_id, user_id, user_name, question_text, session, evolution)
+            return
+
+        # Comandos baseados em estado (usar text_normalized para comandos)
         if session.state == GroupQuizState.IDLE:
-            await handle_idle_state(group_id, user_id, user_name, text_upper, session, group_manager, evolution)
+            await handle_idle_state(group_id, user_id, user_name, text_normalized, session, group_manager, evolution)
+
+        elif session.state == GroupQuizState.WAITING_START:
+            await handle_waiting_start_state(group_id, user_id, user_name, text_normalized, session, group_manager, evolution)
 
         elif session.state == GroupQuizState.ACTIVE:
-            await handle_active_state(group_id, user_id, user_name, text_upper, session, group_manager, evolution)
+            await handle_active_state(group_id, user_id, user_name, text_normalized, text_upper, session, group_manager, evolution)
 
         elif session.state == GroupQuizState.WAITING_NEXT:
-            await handle_waiting_next_state(group_id, text_upper, session, group_manager, evolution)
+            await handle_waiting_next_state(group_id, text_normalized, session, group_manager, evolution)
 
         elif session.state == GroupQuizState.FINISHED:
-            await handle_finished_state(group_id, user_id, user_name, text_upper, session, group_manager, evolution)
+            await handle_finished_state(group_id, user_id, user_name, text_normalized, session, group_manager, evolution)
 
     except Exception as e:
         logger.error(f"Erro ao processar mensagem em {group_id}: {e}", exc_info=True)
@@ -243,16 +351,67 @@ async def handle_idle_state(
     group_id: str,
     user_id: str,
     user_name: str,
-    text_upper: str,
+    text_normalized: str,
     session: Any,
-    group_manager: GroupStateManager,
+    group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
-    """Nenhum quiz ativo."""
-    if text_upper == GroupCommand.INICIAR.value:
-        # Iniciar novo quiz
+    """Nenhum quiz ativo - criar lobby."""
+    if text_normalized == GroupCommand.INICIAR.value:
+        # Criar lobby para aguardar participantes
+        # Admin NÃO é adicionado automaticamente como participante
+        session.state = GroupQuizState.WAITING_START
+        session.started_by = user_id
+        await group_manager.save_session(session)
+
+        # Enviar mensagem de lobby
+        await evolution.send_text(group_id, _formatter.format_lobby_created(user_name, session))
+    else:
+        # Primeira mensagem ou comando desconhecido
+        await evolution.send_text(group_id, _formatter.format_welcome())
+
+
+async def handle_waiting_start_state(
+    group_id: str,
+    user_id: str,
+    user_name: str,
+    text_normalized: str,
+    session: Any,
+    group_manager: GroupStateManagerKV,
+    evolution: EvolutionAPIClient,
+):
+    """Lobby ativo - aguardando participantes."""
+    # Comando ENTRAR - registrar participante
+    if text_normalized == GroupCommand.ENTRAR.value:
+        display_name = _format_participant_name(user_id, user_name)
+        if user_id not in session.participants:
+            session.get_or_create_participant(user_id, user_name)
+            await group_manager.save_session(session)
+            await evolution.send_text(
+                group_id,
+                f"✅ *{display_name}* entrou no quiz!\n\n"
+                f"👥 *Participantes:* {len(session.participants)}\n\n"
+                "_Digite *COMECAR* quando todos estiverem prontos!_"
+            )
+        else:
+            await evolution.send_text(group_id, f"ℹ️ *{display_name}*, você já está no quiz!")
+        return
+
+    # Comando COMECAR - iniciar quiz de fato
+    if text_normalized == GroupCommand.COMECAR.value:
+
+        # Validar: precisa ter pelo menos 1 participante no lobby
+        if len(session.participants) == 0:
+            await evolution.send_text(
+                group_id,
+                "⚠️ *Ninguém entrou no quiz ainda!*\n\n"
+                "Pelo menos 1 pessoa precisa digitar *ENTRAR* antes de começar."
+            )
+            return
+
+        # Iniciar quiz
         try:
-            agentfs = await app_state.get_agentfs()
+            agentfs = await app_state.get_quiz_agentfs()
             rag = await app_state.get_rag()
             engine = QuizEngine(agentfs=agentfs, rag=rag)
 
@@ -265,56 +424,322 @@ async def handle_idle_state(
                 )
                 return
 
+            # Calcular total de perguntas baseado nos participantes do lobby
+            total_questions = session.calculate_initial_questions()
+
             # Iniciar quiz
             quiz_id, first_question = await engine.start_quiz()
+
+            # Inicializar sistema de turnos
+            session.initialize_turn_order()
 
             # Atualizar sessão
             session.quiz_id = quiz_id
             session.state = GroupQuizState.ACTIVE
-            session.started_by = user_id
-            session.started_at = None  # Será setado automaticamente
+            session.started_at = None
             session.start_new_question(1)
-            group_manager.save_session(session)
+            await group_manager.save_session(session)
 
-            # Avisar que quiz iniciou
-            await evolution.send_text(group_id, _formatter.format_quiz_started(user_name))
-            await asyncio.sleep(1)
+            # Avisar que quiz iniciou com total de perguntas
+            await evolution.send_text(group_id, _formatter.format_quiz_started_with_participants(session))
 
-            # Enviar primeira pergunta
-            msg = _formatter.format_question(first_question, 1)
+            # Simular digitação antes da primeira pergunta
+            await evolution.send_typing(group_id, duration=2500)
+            await asyncio.sleep(2.5)
+
+            # Enviar primeira pergunta (com nome + número de quem é a vez)
+            current_turn_name = session.get_current_turn_display()
+            msg = _formatter.format_question(
+                first_question,
+                1,
+                total_questions=session.total_questions,
+                current_turn_name=current_turn_name,
+            )
             await evolution.send_text(group_id, msg)
 
         except Exception as e:
             logger.error(f"Erro ao iniciar quiz no grupo: {e}", exc_info=True)
             await evolution.send_text(group_id, "⚠️ Erro ao iniciar quiz. Tente novamente.")
-    else:
-        # Primeira mensagem ou comando desconhecido
-        await evolution.send_text(group_id, _formatter.format_welcome())
+        return
+
+    # Comando PARAR - cancelar lobby
+    if text_normalized == GroupCommand.PARAR.value:
+        await group_manager.reset_group(group_id)
+        await evolution.send_text(group_id, "❌ Lobby cancelado.")
+        return
+
+    # Mostrar status do lobby para qualquer outra mensagem
+    await evolution.send_text(group_id, _formatter.format_lobby_status(session))
 
 
 async def handle_active_state(
     group_id: str,
     user_id: str,
     user_name: str,
+    text_normalized: str,
     text_upper: str,
     session: Any,
-    group_manager: GroupStateManager,
+    group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
     """Quiz ativo - recebendo respostas."""
     # Verificar se é comando PARAR
-    if text_upper == GroupCommand.PARAR.value:
-        group_manager.reset_group(group_id)
+    if text_normalized == GroupCommand.PARAR.value:
+        await group_manager.reset_group(group_id)
         await evolution.send_text(group_id, _formatter.format_quiz_cancelled(user_name))
         return
 
-    # Verificar se é resposta (A/B/C/D)
+    # Verificar se é comando DICA
+    if text_normalized == GroupCommand.DICA.value:
+        await handle_hint_request(group_id, session, group_manager, evolution)
+        return
+
+    # Verificar se é comando PROXIMA/PROXIMO - avança para próxima pergunta
+    if text_normalized in [GroupCommand.PROXIMA.value, "PROXIMO"]:
+        await send_next_group_question(group_id, session, group_manager, evolution)
+        return
+
+    # Verificar se é resposta (A/B/C/D) - usar text_upper (sem normalização)
     if text_upper in [GroupCommand.A.value, GroupCommand.B.value, GroupCommand.C.value, GroupCommand.D.value]:
         await handle_group_answer(group_id, user_id, user_name, text_upper, session, group_manager, evolution)
         return
 
-    # Ignorar outras mensagens durante quiz ativo
-    # (para não poluir o grupo com mensagens de erro)
+    # Só tratar como dúvida se:
+    # 1. Começar explicitamente com "DUVIDA"
+    # 2. OU terminar com "?" (indicando uma pergunta)
+    # Isso evita tratar comentários/feedback como dúvidas
+    is_explicit_doubt = text_normalized.startswith(GroupCommand.DUVIDA.value)
+    is_question = text_upper.strip().endswith("?")
+
+    if is_explicit_doubt or is_question:
+        original_text = text_normalized.replace(GroupCommand.DUVIDA.value, "").strip() if is_explicit_doubt else text_upper.strip()
+        if original_text and len(original_text) > 2:  # Ignorar mensagens muito curtas
+            await handle_doubt_request(group_id, user_id, user_name, original_text, session, evolution)
+
+
+async def handle_doubt_request(
+    group_id: str,
+    user_id: str,
+    user_name: str,
+    question_text: str,
+    session: Any | None,
+    evolution: EvolutionAPIClient,
+):
+    """Responde dúvida sobre o regulamento usando RAG.
+
+    Fluxo:
+    1. Busca informação relevante no RAG
+    2. Gera resposta usando LLM
+    3. Envia resposta ao grupo
+    4. Se quiz ativo, relembra as opções da pergunta atual
+    """
+    try:
+        # Simular digitação enquanto busca (sem mensagem de "buscando...")
+        await evolution.send_typing(group_id, duration=3000)
+
+        # Formatar nome do usuário com número
+        display_name = _format_participant_name(user_id, user_name)
+
+        # Buscar no RAG
+        rag = await app_state.get_rag()
+        search_results = await rag.search(question_text, top_k=3)
+
+        if not search_results:
+            await evolution.send_text(
+                group_id,
+                f"❓ *{display_name}*, não encontrei informações sobre isso no regulamento.\n\n"
+                "📋 Consulte o regulamento completo:\n"
+                "https://drive.google.com/file/d/1IGdnWI8CD4ltMSM5bJ5RN4sjP5Tu0REO/view"
+            )
+            return
+
+        # Montar contexto das buscas
+        context_parts = []
+        for result in search_results:
+            if hasattr(result, 'content'):
+                context_parts.append(result.content[:500])
+            elif isinstance(result, dict) and 'content' in result:
+                context_parts.append(result['content'][:500])
+
+        context = "\n".join(context_parts)
+
+        # Usar LLM para gerar resposta
+        llm = app_state.get_llm()
+
+        prompt = f"""Você é um assistente especializado no programa Renda Extra Ton.
+
+Um participante do quiz fez a seguinte pergunta:
+"{question_text}"
+
+Com base no contexto do regulamento abaixo, responda de forma clara e objetiva (máximo 3 frases).
+
+CONTEXTO DO REGULAMENTO:
+{context}
+
+IMPORTANTE:
+- Responda APENAS com base no regulamento
+- Se não tiver certeza, diga que o participante deve consultar o regulamento completo
+- Seja direto e educativo
+
+Responda de forma amigável, sem prefixos como "Resposta:" ou similares."""
+
+        llm_response = await llm.completion(
+            [{"role": "user", "content": prompt}],
+            max_tokens=200
+        )
+        answer_text = llm_response.content.strip() if llm_response.content else "Consulte o regulamento para mais detalhes."
+
+        # Montar mensagem de resposta
+        response_msg = f"💡 *{display_name}*, sobre sua dúvida:\n\n{answer_text}"
+
+        # Se quiz está ativo, relembrar as opções da pergunta atual
+        if session and session.state == GroupQuizState.ACTIVE and session.quiz_id:
+            agentfs = await app_state.get_quiz_agentfs()
+            rag_engine = await app_state.get_rag()
+            engine = QuizEngine(agentfs=agentfs, rag=rag_engine)
+
+            question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+            if question and hasattr(question, 'options'):
+                options_lines = []
+                for opt in question.options:
+                    options_lines.append(f"*{opt.label})* {opt.text}")
+                options_text = "\n".join(options_lines)
+
+                response_msg += (
+                    f"\n\n───────────────\n"
+                    f"📝 *Voltando à pergunta {session.current_question}/{session.total_questions}:*\n\n"
+                    f"{options_text}\n\n"
+                    f"_Responda com A, B, C ou D_"
+                )
+
+        await evolution.send_text(group_id, response_msg)
+
+    except Exception as e:
+        logger.error(f"Erro ao responder dúvida: {e}", exc_info=True)
+        display_name = _format_participant_name(user_id, user_name)
+        await evolution.send_text(
+            group_id,
+            f"⚠️ *{display_name}*, não consegui buscar a informação agora.\n\n"
+            "📋 Consulte o regulamento:\n"
+            "https://drive.google.com/file/d/1IGdnWI8CD4ltMSM5bJ5RN4sjP5Tu0REO/view"
+        )
+
+
+async def handle_hint_request(
+    group_id: str,
+    session: Any,
+    group_manager: GroupStateManagerKV,
+    evolution: EvolutionAPIClient,
+):
+    """Gera uma dica para a pergunta atual usando RAG.
+
+    Fluxo:
+    1. Gera dica não repetitiva baseada no RAG
+    2. Após a dica, relembra as opções de resposta
+    """
+    try:
+        # Simular digitação enquanto busca (sem mensagem de "buscando...")
+        await evolution.send_typing(group_id, duration=3000)
+
+        # Buscar pergunta atual
+        agentfs = await app_state.get_quiz_agentfs()
+        rag = await app_state.get_rag()
+        engine = QuizEngine(agentfs=agentfs, rag=rag)
+
+        question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+        if not question:
+            await evolution.send_text(
+                group_id,
+                "⚠️ *Não foi possível buscar a dica.*\n\n"
+                "Possíveis causas:\n"
+                "• Quiz não iniciado corretamente\n"
+                "• Sessão expirada\n\n"
+                "_Tente reiniciar o quiz com INICIAR._"
+            )
+            return
+
+        # Extrair o tema/tópico da pergunta para buscar no RAG
+        question_text = question.question if hasattr(question, 'question') else str(question)
+        topic = question.topic if hasattr(question, 'topic') else ""
+
+        # Buscar informações relevantes no RAG
+        search_query = f"{topic} {question_text}" if topic else question_text
+        search_results = await rag.search(search_query, top_k=3)
+
+        # Obter dicas já dadas para não repetir
+        current_state = session.get_current_question_state()
+        previous_hints = current_state.hints_given if current_state else []
+
+        if not search_results:
+            hint_text = "Leia com atenção as alternativas e pense no que faz mais sentido! 🧠"
+        else:
+            # Montar contexto das buscas
+            context_parts = []
+            for result in search_results:
+                if hasattr(result, 'content'):
+                    context_parts.append(result.content[:500])
+                elif isinstance(result, dict) and 'content' in result:
+                    context_parts.append(result['content'][:500])
+
+            context = "\n".join(context_parts)
+
+            # Usar LLM para gerar dica baseada no contexto
+            llm = app_state.get_llm()
+
+            # Incluir dicas anteriores para evitar repetição
+            previous_hints_text = ""
+            if previous_hints:
+                previous_hints_text = f"\n\nDICAS JÁ DADAS (NÃO REPITA ESTAS INFORMAÇÕES):\n" + "\n".join(f"- {h}" for h in previous_hints)
+
+            hint_prompt = f"""Você é um assistente de quiz sobre o programa Renda Extra Ton.
+
+Com base no contexto do regulamento abaixo, dê uma DICA breve (máximo 2 frases) que ajude a responder esta pergunta, SEM revelar a resposta diretamente.
+
+PERGUNTA: {question_text}
+
+CONTEXTO DO REGULAMENTO:
+{context}{previous_hints_text}
+
+IMPORTANTE:
+- Dê uma dica DIFERENTE das anteriores
+- Não revele a resposta, apenas dê uma pista útil
+- Seja direto e objetivo
+
+Responda APENAS com a dica, sem prefixos como "Dica:" ou similares."""
+
+            llm_response = await llm.completion(
+                [{"role": "user", "content": hint_prompt}],
+                max_tokens=150
+            )
+            hint_text = llm_response.content.strip() if llm_response.content else "Leia o regulamento com atenção!"
+
+        # Salvar dica no histórico para não repetir
+        if current_state and hint_text:
+            current_state.hints_given.append(hint_text)
+            await group_manager.save_session(session)
+
+        # Formatar opções para relembrar
+        options_text = ""
+        if hasattr(question, 'options'):
+            options_lines = []
+            for opt in question.options:
+                options_lines.append(f"*{opt.label})* {opt.text}")
+            options_text = "\n".join(options_lines)
+
+        # Enviar dica formatada + relembrar opções
+        hint_msg = (
+            f"💡 *Dica:*\n\n"
+            f"{hint_text}\n\n"
+            f"───────────────\n"
+            f"📝 *Suas opções:*\n\n"
+            f"{options_text}\n\n"
+            f"_Responda com A, B, C ou D_"
+        )
+        await evolution.send_text(group_id, hint_msg)
+
+    except Exception as e:
+        logger.error(f"Erro ao gerar dica: {e}", exc_info=True)
+        await evolution.send_text(group_id, "⚠️ Erro ao buscar dica. Tente novamente.")
 
 
 async def handle_group_answer(
@@ -323,26 +748,59 @@ async def handle_group_answer(
     user_name: str,
     answer: str,
     session: Any,
-    group_manager: GroupStateManager,
+    group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
-    """Processa resposta de participante."""
+    """Processa resposta de participante.
+
+    Fluxo:
+    1. Verifica se é a vez do usuário (sistema de turnos)
+    2. Valida resposta
+    3. Mostra se acertou/errou com explicação do RAG
+    4. Mostra posição no ranking (se houver mais de 1 participante)
+    5. Avança turno e envia próxima pergunta
+    """
     try:
-        # Verificar se já respondeu
-        if session.has_answered(user_id):
-            # Avisar apenas o usuário (não o grupo todo)
-            # Não fazemos nada para não poluir o grupo
+        # === SISTEMA DE TURNOS ===
+        # Se não for a vez do usuário, informar de quem é a vez
+        if not session.is_user_turn(user_id):
+            current_turn_display = session.get_current_turn_display()
+            display_name = _format_participant_name(user_id, user_name)
+
+            if current_turn_display:
+                await evolution.send_text(
+                    group_id,
+                    f"⏳ *{display_name}*, ainda não é sua vez!\n\n"
+                    f"🎯 Aguardando resposta de *{current_turn_display}*\n\n"
+                    f"💡 _Enquanto isso, você pode tirar dúvidas sobre o regulamento digitando sua pergunta._"
+                )
+            else:
+                # Turno não inicializado - reinicializar
+                session.initialize_turn_order()
+                if session.turn_order:
+                    session.current_turn_user_id = session.turn_order[0]
+                    await group_manager.save_session(session)
+                    current_turn_display = session.get_current_turn_display()
+                    await evolution.send_text(
+                        group_id,
+                        f"🔄 Sistema de turnos reiniciado!\n\n"
+                        f"🎯 Vez de *{current_turn_display}* responder."
+                    )
             return
 
-        agentfs = await app_state.get_agentfs()
+        # Verificar se já respondeu (redundante com turnos, mas mantido por segurança)
+        if session.has_answered(user_id):
+            return
+
+        agentfs = await app_state.get_quiz_agentfs()
         rag = await app_state.get_rag()
         engine = QuizEngine(agentfs=agentfs, rag=rag)
         scoring = QuizScoringEngine()
 
-        # Buscar pergunta atual
+        # Buscar pergunta atual (silencioso - não mostra erro ao usuário)
         question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
         if not question:
-            await evolution.send_text(group_id, "⚠️ Erro ao carregar pergunta.")
+            logger.error(f"[SILENT] Falha ao carregar pergunta {session.current_question} do quiz {session.quiz_id}")
             return
 
         # Converter resposta para índice
@@ -350,61 +808,243 @@ async def handle_group_answer(
 
         # Avaliar resposta
         result = scoring.evaluate_answer(question, answer_index)
+        is_correct = result["is_correct"]
 
         # Salvar resposta na sessão
         session.add_answer(
             user_id=user_id,
             user_name=user_name,
             answer_index=answer_index,
-            is_correct=result["is_correct"],
+            is_correct=is_correct,
             points=result["points_earned"],
         )
-        group_manager.save_session(session)
+        await group_manager.save_session(session)
 
-        # Feedback individual (pode ser enviado ao grupo ou só para o usuário)
-        current_state = session.get_current_question_state()
-        answered_count = len(current_state.answers) if current_state else 0
-        total_participants = len(session.participants)
-
-        feedback = _formatter.format_answer_feedback(
+        # Logar resposta
+        quiz_logger = await get_quiz_logger()
+        await quiz_logger.answer_received(
+            group_id=group_id,
+            user_id=user_id,
             user_name=user_name,
-            is_correct=result["is_correct"],
-            points_earned=result["points_earned"],
-            answered_count=answered_count,
-            total_participants=total_participants,
+            quiz_id=session.quiz_id,
+            question_num=session.current_question,
+            answer=answer,
+            is_correct=is_correct,
+            points=result["points_earned"],
         )
+
+        # Gerar explicação usando RAG
+        explanation = await generate_answer_explanation(
+            question=question,
+            user_answer=answer,
+            is_correct=is_correct,
+            rag=rag,
+        )
+
+        # === MONTAR FEEDBACK ===
+        correct_opt = question.options[question.correct_index]
+        display_name = _format_participant_name(user_id, user_name)
+
+        if is_correct:
+            feedback = f"✅ *{display_name}* acertou! +{result['points_earned']} pts\n\n"
+        else:
+            feedback = f"❌ *{display_name}* errou!\n\n"
+            feedback += f"📍 *Resposta correta:* {correct_opt.label}) {correct_opt.text}\n\n"
+
+        # Adicionar explicação do RAG
+        if explanation:
+            feedback += f"📚 *Por quê?*\n_{explanation}_\n\n"
+
+        # Mostrar ranking APENAS se houver mais de 1 participante
+        total_participants = len(session.participants)
+        if total_participants > 1:
+            ranking = session.get_ranking()
+            user_position = next((i + 1 for i, p in enumerate(ranking) if p.user_id == user_id), None)
+            user_score = session.participants.get(user_id)
+
+            if user_position and user_score:
+                feedback += f"───────────────\n"
+                feedback += f"🏆 *Sua posição:* {user_position}º de {total_participants}\n"
+                feedback += f"📊 *Pontuação:* {user_score.total_score} pts ({user_score.correct_answers}/{user_score.total_answers} acertos)\n"
+
         await evolution.send_text(group_id, feedback)
 
-        # TODO: Implementar lógica de timeout ou avançar automático
-        # Por enquanto, avança manualmente com comando PROXIMA
+        # === AVANÇAR TURNO E PRÓXIMA PERGUNTA ===
+        # Avançar para o próximo jogador
+        session.advance_turn()
+
+        # Dar tempo para pessoa ler o feedback (4 segundos)
+        await asyncio.sleep(4)
+
+        # Simular digitação enquanto "prepara" próxima pergunta (mais realista)
+        await evolution.send_typing(group_id, duration=3000)
+        await asyncio.sleep(3)
+
+        # Verificar se acabou o quiz (usando total dinâmico)
+        if session.current_question >= session.total_questions:
+            session.state = GroupQuizState.FINISHED
+            await group_manager.save_session(session)
+            await evolution.send_text(group_id, _formatter.format_final_results(session))
+            return
+
+        # Avançar para próxima pergunta
+        session.current_question += 1
+        session.start_new_question(session.current_question)
+        await group_manager.save_session(session)
+
+        # Buscar próxima pergunta (com retry silencioso)
+        next_question = None
+        for attempt in range(3):
+            next_question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+            if next_question:
+                break
+            logger.warning(f"[RETRY] Tentativa {attempt + 1}/3 falhou ao carregar pergunta {session.current_question}")
+            await asyncio.sleep(2)
+
+        if not next_question:
+            logger.error(f"[ERRO] Falha ao carregar pergunta {session.current_question} após 3 tentativas")
+            # Não mostrar erro no grupo, apenas logar
+            return
+
+        # Enviar próxima pergunta (com nome + número de quem é a vez)
+        current_turn_name = session.get_current_turn_display()
+        question_msg = _formatter.format_question(
+            next_question,
+            session.current_question,
+            total_questions=session.total_questions,
+            current_turn_name=current_turn_name,
+        )
+        await evolution.send_text(group_id, question_msg)
 
     except Exception as e:
         logger.error(f"Erro ao processar resposta no grupo: {e}", exc_info=True)
-        await evolution.send_text(group_id, "⚠️ Erro ao processar resposta.")
+        try:
+            quiz_logger = await get_quiz_logger()
+            await quiz_logger.error(
+                message="Erro ao processar resposta",
+                error=str(e),
+                group_id=group_id,
+                user_id=user_id,
+                quiz_id=session.quiz_id if session else None,
+            )
+        except:
+            pass
+        # Erro silencioso - não mostrar ao usuário, apenas logar
+
+
+async def generate_answer_explanation(
+    question: Any,
+    user_answer: str,
+    is_correct: bool,
+    rag: Any,
+) -> str | None:
+    """Gera explicação para a resposta usando RAG e LLM.
+
+    Args:
+        question: Objeto da pergunta
+        user_answer: Resposta do usuário (A/B/C/D)
+        is_correct: Se a resposta está correta
+        rag: Instância do SearchEngine
+
+    Returns:
+        Explicação gerada ou None se falhar
+    """
+    try:
+        # Extrair texto da pergunta
+        question_text = question.question if hasattr(question, 'question') else str(question)
+        topic = question.topic if hasattr(question, 'topic') else ""
+
+        # Resposta correta
+        correct_opt = question.options[question.correct_index]
+        correct_answer = f"{correct_opt.label}) {correct_opt.text}"
+
+        # Buscar contexto no RAG
+        search_query = f"{topic} {question_text}" if topic else question_text
+        search_results = await rag.search(search_query, top_k=2)
+
+        if not search_results:
+            return None
+
+        # Montar contexto
+        context_parts = []
+        for result in search_results:
+            if hasattr(result, 'content'):
+                context_parts.append(result.content[:500])
+            elif isinstance(result, dict) and 'content' in result:
+                context_parts.append(result['content'][:500])
+
+        context = "\n".join(context_parts)
+
+        if not context:
+            return None
+
+        # Gerar explicação com LLM
+        llm = app_state.get_llm()
+
+        if is_correct:
+            prompt = f"""Você é um assistente de quiz sobre o programa Renda Extra Ton.
+
+O participante ACERTOU a pergunta. Dê uma explicação BREVE (1-2 frases) confirmando por que a resposta está correta, baseada no regulamento.
+
+PERGUNTA: {question_text}
+RESPOSTA CORRETA: {correct_answer}
+
+CONTEXTO DO REGULAMENTO:
+{context}
+
+Responda de forma direta e educativa, confirmando a informação do regulamento."""
+        else:
+            # Resposta que o usuário escolheu
+            user_idx = {"A": 0, "B": 1, "C": 2, "D": 3}[user_answer]
+            user_opt = question.options[user_idx]
+            user_answer_text = f"{user_opt.label}) {user_opt.text}"
+
+            prompt = f"""Você é um assistente de quiz sobre o programa Renda Extra Ton.
+
+O participante ERROU a pergunta. Explique BREVEMENTE (1-2 frases) por que a resposta dele está errada e por que a correta é a certa, baseado no regulamento.
+
+PERGUNTA: {question_text}
+RESPOSTA DO PARTICIPANTE (ERRADA): {user_answer_text}
+RESPOSTA CORRETA: {correct_answer}
+
+CONTEXTO DO REGULAMENTO:
+{context}
+
+Responda de forma educativa, explicando o erro e a informação correta do regulamento."""
+
+        llm_response = await llm.completion(
+            [{"role": "user", "content": prompt}],
+            max_tokens=150
+        )
+        return llm_response.content.strip() if llm_response.content else None
+
+    except Exception as e:
+        logger.error(f"Erro ao gerar explicação: {e}")
+        return None
 
 
 async def handle_waiting_next_state(
     group_id: str,
-    text_upper: str,
+    text_normalized: str,
     session: Any,
-    group_manager: GroupStateManager,
+    group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
     """Aguardando comando para próxima pergunta."""
-    if text_upper == GroupCommand.PROXIMA.value:
+    if text_normalized == GroupCommand.PROXIMA.value:
         await send_next_group_question(group_id, session, group_manager, evolution)
 
 
 async def send_next_group_question(
     group_id: str,
     session: Any,
-    group_manager: GroupStateManager,
+    group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
     """Envia próxima pergunta para o grupo."""
     try:
         # Mostrar resultado da pergunta anterior
-        agentfs = await app_state.get_agentfs()
+        agentfs = await app_state.get_quiz_agentfs()
         rag = await app_state.get_rag()
         engine = QuizEngine(agentfs=agentfs, rag=rag)
 
@@ -419,12 +1059,18 @@ async def send_next_group_question(
                     explanation=prev_question.explanation,
                 )
                 await evolution.send_text(group_id, result_msg)
+
+                # Simular digitação antes da próxima pergunta
+                await evolution.send_typing(group_id, duration=2000)
                 await asyncio.sleep(2)
 
-        # Verificar se acabou
-        if session.current_question >= 10:
+        # Avançar turno para o próximo jogador
+        session.advance_turn()
+
+        # Verificar se acabou (usando total dinâmico)
+        if session.current_question >= session.total_questions:
             session.state = GroupQuizState.FINISHED
-            group_manager.save_session(session)
+            await group_manager.save_session(session)
             await evolution.send_text(group_id, _formatter.format_final_results(session))
             return
 
@@ -432,15 +1078,29 @@ async def send_next_group_question(
         session.current_question += 1
         session.start_new_question(session.current_question)
         session.state = GroupQuizState.ACTIVE
-        group_manager.save_session(session)
+        await group_manager.save_session(session)
 
-        # Buscar e enviar próxima pergunta
-        next_question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+        # Buscar próxima pergunta (com retry silencioso)
+        next_question = None
+        for attempt in range(3):
+            next_question = await engine.get_question(session.quiz_id, session.current_question, timeout=30.0)
+            if next_question:
+                break
+            logger.warning(f"[RETRY] Tentativa {attempt + 1}/3 falhou ao carregar pergunta {session.current_question}")
+            await asyncio.sleep(2)
+
         if not next_question:
-            await evolution.send_text(group_id, "⚠️ Erro ao carregar próxima pergunta.")
+            logger.error(f"[ERRO] Falha ao carregar pergunta {session.current_question} após 3 tentativas")
             return
 
-        msg = _formatter.format_question(next_question, session.current_question)
+        # Enviar com nome + número de quem é a vez
+        current_turn_name = session.get_current_turn_display()
+        msg = _formatter.format_question(
+            next_question,
+            session.current_question,
+            total_questions=session.total_questions,
+            current_turn_name=current_turn_name,
+        )
         await evolution.send_text(group_id, msg)
 
     except Exception as e:
@@ -452,17 +1112,17 @@ async def handle_finished_state(
     group_id: str,
     user_id: str,
     user_name: str,
-    text_upper: str,
+    text_normalized: str,
     session: Any,
-    group_manager: GroupStateManager,
+    group_manager: GroupStateManagerKV,
     evolution: EvolutionAPIClient,
 ):
     """Quiz finalizado."""
-    if text_upper == GroupCommand.INICIAR.value:
+    if text_normalized == GroupCommand.INICIAR.value:
         # Resetar e iniciar novo quiz
-        group_manager.reset_group(group_id)
-        new_session = group_manager.get_session(group_id)
-        await handle_idle_state(group_id, user_id, user_name, text_upper, new_session, group_manager, evolution)
+        await group_manager.reset_group(group_id)
+        new_session = await group_manager.get_session(group_id)
+        await handle_idle_state(group_id, user_id, user_name, text_normalized, new_session, group_manager, evolution)
 
 
 # =============================================================================
@@ -473,14 +1133,14 @@ async def handle_finished_state(
 @router.post("/whitelist/add/{group_id}")
 async def add_group_to_whitelist(
     group_id: str,
-    group_manager: GroupStateManager = Depends(get_group_manager),
+    group_manager: GroupStateManagerKV = Depends(get_group_manager),
 ):
     """Adiciona grupo à whitelist (ADMIN).
 
     Args:
         group_id: ID do grupo WhatsApp (ex: 123456789@g.us)
     """
-    success = group_manager.add_allowed_group(group_id)
+    success = await group_manager.add_allowed_group(group_id)
     if success:
         return {"status": "ok", "message": f"Grupo {group_id} adicionado à whitelist"}
     return {"status": "ok", "message": f"Grupo {group_id} já estava na whitelist"}
@@ -489,14 +1149,14 @@ async def add_group_to_whitelist(
 @router.delete("/whitelist/remove/{group_id}")
 async def remove_group_from_whitelist(
     group_id: str,
-    group_manager: GroupStateManager = Depends(get_group_manager),
+    group_manager: GroupStateManagerKV = Depends(get_group_manager),
 ):
     """Remove grupo da whitelist (ADMIN).
 
     Args:
         group_id: ID do grupo WhatsApp
     """
-    success = group_manager.remove_allowed_group(group_id)
+    success = await group_manager.remove_allowed_group(group_id)
     if success:
         return {"status": "ok", "message": f"Grupo {group_id} removido da whitelist"}
     return {"status": "error", "message": f"Grupo {group_id} não estava na whitelist"}
@@ -504,19 +1164,19 @@ async def remove_group_from_whitelist(
 
 @router.get("/whitelist")
 async def list_whitelisted_groups(
-    group_manager: GroupStateManager = Depends(get_group_manager),
+    group_manager: GroupStateManagerKV = Depends(get_group_manager),
 ):
     """Lista grupos autorizados (ADMIN)."""
-    groups = group_manager.list_allowed_groups()
+    groups = await group_manager.list_allowed_groups()
     return {"total": len(groups), "groups": groups}
 
 
 @router.get("/active")
 async def get_active_group_sessions(
-    group_manager: GroupStateManager = Depends(get_group_manager),
+    group_manager: GroupStateManagerKV = Depends(get_group_manager),
 ):
     """Lista grupos com quiz ativo (ADMIN)."""
-    active = group_manager.get_active_groups()
+    active = await group_manager.get_active_groups()
     return {
         "total": len(active),
         "groups": [
@@ -536,8 +1196,100 @@ async def get_active_group_sessions(
 @router.post("/reset/{group_id}")
 async def reset_group_session(
     group_id: str,
-    group_manager: GroupStateManager = Depends(get_group_manager),
+    group_manager: GroupStateManagerKV = Depends(get_group_manager),
 ):
     """Reseta sessão de um grupo (ADMIN)."""
-    group_manager.reset_group(group_id)
+    await group_manager.reset_group(group_id)
     return {"status": "ok", "message": f"Sessão de {group_id} resetada"}
+
+
+@router.post("/send-hint/{group_id}")
+async def send_hint_to_group(
+    group_id: str,
+    group_manager: GroupStateManagerKV = Depends(get_group_manager),
+    evolution: EvolutionAPIClient = Depends(get_evolution_client),
+):
+    """Envia dica para o grupo (ADMIN)."""
+    session = await group_manager.get_session(group_id)
+    if session.state.value != "active":
+        return {"status": "error", "message": "Nenhum quiz ativo"}
+
+    await handle_hint_request(group_id, session, group_manager, evolution)
+    return {"status": "ok", "message": f"Dica enviada para {group_id}"}
+
+
+# =============================================================================
+# LOGS ENDPOINTS
+# =============================================================================
+
+
+@router.get("/logs")
+async def get_quiz_logs(
+    category: str | None = None,
+    date: str | None = None,
+    group_id: str | None = None,
+    limit: int = 50,
+):
+    """Lista logs do quiz (ADMIN).
+
+    Args:
+        category: Filtrar por categoria (webhook, message, command, quiz, participant, rag, llm, error, system, api)
+        date: Filtrar por data (YYYY-MM-DD)
+        group_id: Filtrar por grupo
+        limit: Limite de resultados (default 50)
+    """
+    try:
+        quiz_logger = await get_quiz_logger()
+
+        # Converter categoria se fornecida
+        cat = None
+        if category:
+            try:
+                cat = LogCategory(category)
+            except ValueError:
+                return {"status": "error", "message": f"Categoria inválida: {category}"}
+
+        logs = await quiz_logger.get_logs(
+            category=cat,
+            date=date,
+            group_id=group_id,
+            limit=limit,
+        )
+
+        return {
+            "total": len(logs),
+            "logs": [log.model_dump(mode="json") for log in logs],
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar logs: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/logs/errors")
+async def get_recent_errors(limit: int = 20):
+    """Lista erros recentes (ADMIN)."""
+    try:
+        quiz_logger = await get_quiz_logger()
+        errors = await quiz_logger.get_recent_errors(limit=limit)
+        return {
+            "total": len(errors),
+            "errors": [log.model_dump(mode="json") for log in errors],
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar erros: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/logs/group/{group_id}")
+async def get_group_logs(group_id: str, limit: int = 50):
+    """Lista atividade de um grupo específico (ADMIN)."""
+    try:
+        quiz_logger = await get_quiz_logger()
+        logs = await quiz_logger.get_group_activity(group_id=group_id, limit=limit)
+        return {
+            "total": len(logs),
+            "logs": [log.model_dump(mode="json") for log in logs],
+        }
+    except Exception as e:
+        logger.error(f"Erro ao buscar logs do grupo: {e}")
+        return {"status": "error", "message": str(e)}
