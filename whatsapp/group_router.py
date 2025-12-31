@@ -205,7 +205,7 @@ async def group_webhook(
             # Fallback para remoteJid (pode ser admin)
             participant = remote_jid
 
-        user_number = participant.replace("@s.whatsapp.net", "")
+        user_number = participant.replace("@s.whatsapp.net", "").replace("@lid", "")
 
         # Processar mensagem em background
         background_tasks.add_task(

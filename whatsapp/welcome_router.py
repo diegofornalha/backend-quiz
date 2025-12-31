@@ -317,7 +317,7 @@ async def _send_goodbye_dm(
         invite_link = "https://chat.whatsapp.com/BKrn8SOMBYG8v9LWtFOTJk"
 
         goodbye_message = (
-            f"Oi {name}! 👋\n\n"
+            f"Oi! 👋\n\n"
             f"Vi que você saiu do grupo.\n\n"
             f"Sentiremos sua falta! 😢\n\n"
             f"Se quiser voltar a qualquer momento, é só clicar no link abaixo:\n"
