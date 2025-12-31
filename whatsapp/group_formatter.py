@@ -449,10 +449,7 @@ Digite *INICIAR* para começar um novo quiz!"""
 👥 *Participantes ({len(participant_displays)}):*
 {participants_text}
 
-━━━━━━━━━━━━━
-
-📝 *Como participar:*
-Digite *ENTRAR* para entrar no quiz"""
+🚀 Digite *COMECAR* quando todos estiverem prontos"""
 
     @staticmethod
     def format_lobby_status(session: GroupQuizSession) -> str:
@@ -475,11 +472,7 @@ Digite *ENTRAR* para entrar no quiz"""
 👥 *Participantes ({len(participant_displays)}):*
 {chr(10).join(f'• {name}' for name in participant_displays) if participant_displays else '• Nenhum ainda'}
 
-━━━━━━━━━━━━━
-
-📝 Digite *ENTRAR* para participar
-🚀 Digite *COMECAR* quando prontos
-❌ Digite *PARAR* para cancelar
+🚀 Digite *COMECAR* quando todos estiverem prontos
 
 📢 *Convide mais pessoas:*
 https://chat.whatsapp.com/BKrn8SOMBYG8v9LWtFOTJk"""
